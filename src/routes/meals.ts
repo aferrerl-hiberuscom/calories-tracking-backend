@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getRequiredUserId, requireAuth } from "../middleware/auth";
 import { ApiError } from "../middleware/api-error";
 import { prisma } from "../lib/prisma";
+import { deleteImage } from "../services/storage.service";
 
 export const mealsRouter = Router();
 
@@ -335,7 +336,21 @@ mealsRouter.delete("/:id", requireAuth, async (req, res, next) => {
       );
     }
 
+    // Fetch image key before deletion so we can clean up storage (AC-007)
+    const mealWithImage = await prisma.meal.findUnique({
+      where: { id: meal.id },
+      include: { image: true },
+    });
+    const imageKey = mealWithImage?.image?.storageKey;
+
     await prisma.meal.delete({ where: { id: meal.id } });
+
+    // Delete from storage after DB delete; errors are logged but do not
+    // block the response (AC-007: deletion failures logged without blocking)
+    if (imageKey) {
+      void deleteImage(imageKey);
+    }
+
     return res.json({ meal_id: meal.id, status: "deleted" });
   } catch (error) {
     return next(error);

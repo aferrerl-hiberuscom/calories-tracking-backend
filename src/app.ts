@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { analyzeImageRouter } from "./routes/analyze-image";
 import { dashboardRouter } from "./routes/dashboard";
 import { healthRouter } from "./routes/health";
+import { imagesRouter } from "./routes/images";
 import { mealsRouter } from "./routes/meals";
 import { errorHandler } from "./middleware/error-handler";
 import { rateLimit } from "./middleware/rate-limit";
@@ -32,6 +33,11 @@ export function createApp() {
     "/api/v1/meals",
     rateLimit({ max: 60, windowMs: 60_000 }),
     mealsRouter,
+  );
+  app.use(
+    "/api/v1/images",
+    rateLimit({ max: 60, windowMs: 60_000 }),
+    imagesRouter,
   );
   app.use(
     "/api/v1/dashboard",
