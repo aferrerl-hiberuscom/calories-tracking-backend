@@ -26,16 +26,20 @@ model Meal {
   image       Image?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  @@index([userId, mealDate])
+  @@index([userId])
 }
 
 model Ingredient {
-  id         String  @id @default(uuid())
-  mealId     String
-  meal       Meal    @relation(fields: [mealId], references: [id], onDelete: Cascade)
-  name       String
-  quantityG  Float
-  source     String
-  confidence Float?
+  id            String  @id @default(uuid())
+  mealId        String
+  meal          Meal    @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  name          String
+  quantityG     Float
+  source        String
+  confidence    Float?
+  cookingMethod String?
 }
 
 model NutritionalData {

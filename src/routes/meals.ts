@@ -15,6 +15,7 @@ const MealPayloadSchema = z.object({
         quantity_g: z.number().positive(),
         source: z.enum(["visible", "inferred", "manual"]),
         confidence: z.number().min(0).max(1).optional(),
+        cooking_method: z.string().optional(),
       }),
     )
     .min(1),
@@ -32,6 +33,11 @@ const MealPayloadSchema = z.object({
   }),
 });
 
+const ListMealsQuerySchema = z.object({
+  start_date: z.string().datetime().optional(),
+  end_date: z.string().datetime().optional(),
+});
+
 const idempotencyMealMap = new Map<string, string>();
 
 function resolveParamId(value: string | string[] | undefined): string {
@@ -43,6 +49,133 @@ function resolveParamId(value: string | string[] | undefined): string {
   }
   throw new ApiError(400, "VALIDATION_ERROR", "Missing meal id");
 }
+
+mealsRouter.get("/", requireAuth, async (req, res, next) => {
+  const parsed = ListMealsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return next(
+      new ApiError(400, "VALIDATION_ERROR", "Invalid query parameters"),
+    );
+  }
+
+  const userId = getRequiredUserId(req);
+  const now = new Date();
+  const startDate = parsed.data.start_date
+    ? new Date(parsed.data.start_date)
+    : new Date(
+        Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          0,
+          0,
+          0,
+          0,
+        ),
+      );
+  const endDate = parsed.data.end_date
+    ? new Date(parsed.data.end_date)
+    : new Date(
+        Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          23,
+          59,
+          59,
+          999,
+        ),
+      );
+
+  try {
+    const meals = await prisma.meal.findMany({
+      where: {
+        userId,
+        status: "confirmed",
+        mealDate: { gte: startDate, lte: endDate },
+      },
+      include: { nutrition: true },
+      orderBy: { mealDate: "desc" },
+    });
+
+    return res.json({
+      meals: meals.map((meal) => ({
+        meal_id: meal.id,
+        meal_date: meal.mealDate.toISOString(),
+        status: meal.status,
+        calories_kcal: meal.nutrition?.caloriesKcal ?? 0,
+        protein_g: meal.nutrition?.proteinG ?? 0,
+        carbs_g: meal.nutrition?.carbsG ?? 0,
+        fat_g: meal.nutrition?.fatG ?? 0,
+        total_weight_g: meal.nutrition?.totalWeightG ?? 0,
+        created_at: meal.createdAt.toISOString(),
+        updated_at: meal.updatedAt.toISOString(),
+      })),
+      count: meals.length,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
+  const userId = getRequiredUserId(req);
+  const mealId = resolveParamId(req.params.id);
+
+  try {
+    const meal = await prisma.meal.findUnique({
+      where: { id: mealId },
+      include: { ingredients: true, nutrition: true, image: true },
+    });
+
+    if (!meal) {
+      return next(new ApiError(404, "NOT_FOUND", "Meal not found"));
+    }
+    if (meal.userId !== userId) {
+      return next(
+        new ApiError(
+          403,
+          "FORBIDDEN",
+          "Meal does not belong to authenticated user",
+        ),
+      );
+    }
+
+    return res.json({
+      meal_id: meal.id,
+      meal_date: meal.mealDate.toISOString(),
+      status: meal.status,
+      ingredients: meal.ingredients.map((ing) => ({
+        id: ing.id,
+        name: ing.name,
+        quantity_g: ing.quantityG,
+        source: ing.source,
+        cooking_method: ing.cookingMethod ?? null,
+        confidence: ing.confidence ?? null,
+      })),
+      nutrition: meal.nutrition
+        ? {
+            calories_kcal: meal.nutrition.caloriesKcal,
+            protein_g: meal.nutrition.proteinG,
+            carbs_g: meal.nutrition.carbsG,
+            fat_g: meal.nutrition.fatG,
+            total_weight_g: meal.nutrition.totalWeightG,
+          }
+        : null,
+      image: meal.image
+        ? {
+            storage_key: meal.image.storageKey,
+            mime_type: meal.image.mimeType,
+            size_bytes: meal.image.sizeBytes,
+          }
+        : null,
+      created_at: meal.createdAt.toISOString(),
+      updated_at: meal.updatedAt.toISOString(),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 mealsRouter.post("/", requireAuth, async (req, res, next) => {
   const parsed = MealPayloadSchema.safeParse(req.body);
@@ -76,6 +209,7 @@ mealsRouter.post("/", requireAuth, async (req, res, next) => {
           quantityG: ingredient.quantity_g,
           source: ingredient.source,
           confidence: ingredient.confidence,
+          cookingMethod: ingredient.cooking_method,
         })),
       });
 
@@ -152,6 +286,7 @@ mealsRouter.put("/:id", requireAuth, async (req, res, next) => {
           quantityG: ingredient.quantity_g,
           source: ingredient.source,
           confidence: ingredient.confidence,
+          cookingMethod: ingredient.cooking_method,
         })),
       });
 
