@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  meals     Meal[]
+  createdAt DateTime @default(now())
+}
+
+model Meal {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mealDate    DateTime
+  status      String
+  ingredients Ingredient[]
+  nutrition   NutritionalData?
+  image       Image?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Ingredient {
+  id         String  @id @default(uuid())
+  mealId     String
+  meal       Meal    @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  name       String
+  quantityG  Float
+  source     String
+  confidence Float?
+}
+
+model NutritionalData {
+  id           String @id @default(uuid())
+  mealId       String @unique
+  meal         Meal   @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  caloriesKcal Float
+  proteinG     Float
+  carbsG       Float
+  fatG         Float
+  totalWeightG Float
+}
+
+model Image {
+  id         String   @id @default(uuid())
+  mealId     String   @unique
+  meal       Meal     @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  storageKey String
+  mimeType   String
+  sizeBytes  Int
+  createdAt  DateTime @default(now())
+}
