@@ -162,3 +162,52 @@ export async function deleteImage(storageKey: string): Promise<void> {
     console.error(`[storage] deleteImage threw for key ${storageKey}:`, err);
   }
 }
+
+const STORAGE_KEY_MIME_MAP: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+};
+
+function mimeTypeFromStorageKey(storageKey: string): string {
+  const ext = storageKey.split(".").pop()?.toLowerCase() ?? "";
+  return STORAGE_KEY_MIME_MAP[ext] ?? "image/jpeg";
+}
+
+/**
+ * Download image bytes from private storage and return as base64.
+ * Used by the analyze-image route when the client provides a storage_key
+ * instead of a base64 payload (BT-001, AC-001).
+ */
+export async function fetchImageFromStorage(
+  storageKey: string,
+): Promise<{ base64: string; mimeType: string }> {
+  if (!isConfigured()) {
+    throw new Error(
+      "Storage service not configured: SUPABASE_URL and SUPABASE_SERVICE_KEY required",
+    );
+  }
+
+  const url = `${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${storageKey}`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: SUPABASE_SERVICE_KEY,
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Storage fetch failed (${response.status}) for key ${storageKey}: ${body}`,
+    );
+  }
+
+  const buffer = await response.arrayBuffer();
+  const base64 = Buffer.from(buffer).toString("base64");
+  const mimeType = mimeTypeFromStorageKey(storageKey);
+
+  return { base64, mimeType };
+}
