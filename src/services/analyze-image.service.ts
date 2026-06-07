@@ -15,8 +15,9 @@ export type AnalyzeInput = {
 export type IngredientResult = {
   name: string;
   quantity_g: number;
-  source: "ai";
+  source: "ai_inferred" | "source_manual";
   confidence: number;
+  low_confidence: boolean;
   calories_kcal: number;
   protein_g: number;
   carbs_g: number;
@@ -99,6 +100,7 @@ class TransientProviderError extends Error {
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRIES = 2;
 const RETRY_BACKOFF_MS = [1_000, 2_000];
+const DEFAULT_LOW_CONFIDENCE_THRESHOLD = 0.6;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -122,16 +124,23 @@ function canUseMockFallback(): boolean {
 function normalizeIngredients(
   raw: RawProviderIngredient[],
 ): IngredientResult[] {
-  return raw.map((item) => ({
-    name: item.name ?? "Unknown",
-    quantity_g: item.quantity_g ?? 0,
-    source: "ai" as const,
-    confidence: item.confidence ?? 0,
-    calories_kcal: item.calories_kcal ?? 0,
-    protein_g: item.protein_g ?? 0,
-    carbs_g: item.carbs_g ?? 0,
-    fat_g: item.fat_g ?? 0,
-  }));
+  const threshold = Number(
+    process.env.LOW_CONFIDENCE_THRESHOLD ?? DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+  );
+  return raw.map((item) => {
+    const confidence = item.confidence ?? 0;
+    return {
+      name: item.name ?? "Unknown",
+      quantity_g: item.quantity_g ?? 0,
+      source: "ai_inferred" as const,
+      confidence,
+      low_confidence: confidence < threshold,
+      calories_kcal: item.calories_kcal ?? 0,
+      protein_g: item.protein_g ?? 0,
+      carbs_g: item.carbs_g ?? 0,
+      fat_g: item.fat_g ?? 0,
+    };
+  });
 }
 
 function computeTotals(ingredients: IngredientResult[]): AnalyzeTotals {

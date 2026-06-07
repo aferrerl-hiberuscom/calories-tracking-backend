@@ -38,8 +38,9 @@ const MOCK_ANALYZE_OUTPUT: AnalyzeOutput = {
     {
       name: "Rice",
       quantity_g: 100,
-      source: "ai",
+      source: "ai_inferred",
       confidence: 0.9,
+      low_confidence: false,
       calories_kcal: 120,
       protein_g: 2,
       carbs_g: 26,

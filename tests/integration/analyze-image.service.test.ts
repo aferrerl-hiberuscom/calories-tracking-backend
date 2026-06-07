@@ -213,13 +213,11 @@ describe("T015 — error classification and retry", () => {
   }, 20_000); // retries across two providers = up to ~12 s of backoff
 
   it("treats timeout (AbortError) as transient — retries", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockRejectedValue(
-        Object.assign(new Error("The operation was aborted"), {
-          name: "AbortError",
-        }),
-      );
+    const fetchMock = vi.fn().mockRejectedValue(
+      Object.assign(new Error("The operation was aborted"), {
+        name: "AbortError",
+      }),
+    );
 
     vi.stubGlobal("fetch", fetchMock);
 
@@ -315,11 +313,13 @@ describe("T017 — response shape (contract compliance)", () => {
       expect(ing).toHaveProperty("quantity_g");
       expect(ing).toHaveProperty("source");
       expect(ing).toHaveProperty("confidence");
+      expect(ing).toHaveProperty("low_confidence");
       expect(ing).toHaveProperty("calories_kcal");
       expect(ing).toHaveProperty("protein_g");
       expect(ing).toHaveProperty("carbs_g");
       expect(ing).toHaveProperty("fat_g");
-      expect(ing.source).toBe("ai");
+      expect(ing.source).toBe("ai_inferred");
+      expect(typeof ing.low_confidence).toBe("boolean");
       expect(ing.quantity_g).toBeGreaterThan(0);
     }
   });
@@ -355,5 +355,67 @@ describe("T017 — response shape (contract compliance)", () => {
       input_hash: expect.any(String),
       fallback: expect.any(Boolean),
     });
+  });
+
+  it("AC-4: flags ingredients with confidence below threshold as low_confidence", async () => {
+    process.env.LOW_CONFIDENCE_THRESHOLD = "0.6";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSuccessResponse({
+          ingredients: [
+            {
+              name: "Chicken",
+              quantity_g: 150,
+              confidence: 0.95,
+              calories_kcal: 248,
+              protein_g: 46,
+              carbs_g: 0,
+              fat_g: 5,
+            },
+            {
+              name: "Sauce",
+              quantity_g: 30,
+              confidence: 0.4,
+              calories_kcal: 50,
+              protein_g: 1,
+              carbs_g: 5,
+              fat_g: 2,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.ingredients[0].low_confidence).toBe(false); // 0.95 >= 0.6
+    expect(result.ingredients[1].low_confidence).toBe(true); // 0.4 < 0.6
+  });
+
+  it("AC-4: ingredient with confidence exactly at threshold is NOT low_confidence", async () => {
+    process.env.LOW_CONFIDENCE_THRESHOLD = "0.6";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSuccessResponse({
+          ingredients: [
+            {
+              name: "Rice",
+              quantity_g: 100,
+              confidence: 0.6,
+              calories_kcal: 120,
+              protein_g: 2,
+              carbs_g: 26,
+              fat_g: 0,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.ingredients[0].low_confidence).toBe(false); // exactly at threshold → not flagged
   });
 });
