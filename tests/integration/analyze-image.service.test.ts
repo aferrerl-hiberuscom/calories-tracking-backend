@@ -4,12 +4,21 @@
  * Tests T014: metadata correctness (input_hash, fallback, provider)
  * Tests T015: error classification and retry (transient/permanent/critical)
  * Tests T016: no sensitive data in logs
- * Tests T017: response shape validation (contract compliance)
+ * Tests T017: response shape validation (contract compliance — Feature 005)
+ * Tests T018: normalizeCookingMethod
+ * Tests T019: classifyConfidenceLevel
+ * Tests T020: provenance fields (AC-008)
+ * Tests T021: status COMPLETED_WITH_WARNINGS (AC-005)
+ * Tests T022: cooking_method normalization in output (AC-009)
  */
 
 import { createHash } from "crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { analyzeImageWithFallback } from "../../src/services/analyze-image.service";
+import {
+  analyzeImageWithFallback,
+  normalizeCookingMethod,
+  classifyConfidenceLevel,
+} from "../../src/services/analyze-image.service";
 import type { AnalyzeInput } from "../../src/services/analyze-image.service";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -29,6 +38,10 @@ function makeSuccessResponse(overrides: Record<string, unknown> = {}) {
     status: 200,
     json: async () => ({
       dish_description: "Grilled chicken salad",
+      dish_name: "Grilled Chicken Salad",
+      cuisine_type: "American",
+      cooking_method_raw: "GRILLED",
+      confidence: 0.87,
       model: "gpt-4o",
       ingredients: [
         {
@@ -292,7 +305,28 @@ describe("T017 — response shape (contract compliance)", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns dish_description as non-empty string", async () => {
+  it("returns dish_description_structured as DishDescription object (Feature 005 contract)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.dish_description_structured).toMatchObject({
+      dish_name: expect.any(String),
+      description: expect.any(String),
+      cuisine_type: expect.any(String),
+      cooking_method: expect.stringMatching(
+        /^(FRIED|BAKED|GRILLED|BOILED|RAW|MIXED)$/,
+      ),
+    });
+    expect(result.dish_description_structured.dish_name.length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      result.dish_description_structured.description.length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("returns dish_description as non-empty string (backward compat)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
 
     const result = await analyzeImageWithFallback(VALID_INPUT);
@@ -417,5 +451,235 @@ describe("T017 — response shape (contract compliance)", () => {
     const result = await analyzeImageWithFallback(VALID_INPUT);
 
     expect(result.ingredients[0].low_confidence).toBe(false); // exactly at threshold → not flagged
+  });
+});
+
+// ─── T018: normalizeCookingMethod ─────────────────────────────────────────────
+
+describe("T018 — normalizeCookingMethod (AC-009)", () => {
+  it.each([
+    ["GRILLED", "GRILLED"],
+    ["grilled", "GRILLED"],
+    ["GRILLING", "GRILLED"],
+    ["GRILL", "GRILLED"],
+    ["BAKED", "BAKED"],
+    ["BAKING", "BAKED"],
+    ["ROASTED", "BAKED"],
+    ["ROASTING", "BAKED"],
+    ["FRIED", "FRIED"],
+    ["FRYING", "FRIED"],
+    ["FRITO", "FRIED"],
+    ["BOILED", "BOILED"],
+    ["BOILING", "BOILED"],
+    ["HERVIDO", "BOILED"],
+    ["RAW", "RAW"],
+    ["CRUDO", "RAW"],
+    ["MIXED", "MIXED"],
+    ["unknown value", "MIXED"],
+    [undefined, "MIXED"],
+    ["", "MIXED"],
+  ])("normalizes %s → %s", (input, expected) => {
+    expect(normalizeCookingMethod(input)).toBe(expected);
+  });
+});
+
+// ─── T019: classifyConfidenceLevel ───────────────────────────────────────────
+
+describe("T019 — classifyConfidenceLevel", () => {
+  it.each([
+    [0.9, "HIGH_CONFIDENCE"],
+    [0.7, "HIGH_CONFIDENCE"], // exact boundary
+    [0.69, "MEDIUM_CONFIDENCE"],
+    [0.5, "MEDIUM_CONFIDENCE"], // exact boundary
+    [0.49, "LOW_CONFIDENCE"],
+    [0.0, "LOW_CONFIDENCE"],
+    [1.0, "HIGH_CONFIDENCE"],
+  ])("confidence %s → %s", (confidence, expected) => {
+    expect(classifyConfidenceLevel(confidence)).toBe(expected);
+  });
+});
+
+// ─── T020: Provenance fields (AC-008) ────────────────────────────────────────
+
+describe("T020 — provenance fields (AC-008)", () => {
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_VISION_URL =
+      "https://api.openai.com/v1/chat/completions";
+    process.env.ALLOW_MOCK_AI = "false";
+    process.env.NODE_ENV = "test";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("provenance.source = openai_vision on primary success", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.provenance.source).toBe("openai_vision");
+    expect(result.provenance.model).toBeTruthy();
+    expect(result.provenance.processed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("provenance.source = google_vision on fallback success (AC-003)", async () => {
+    process.env.GOOGLE_VISION_API_KEY = "test-google-key";
+    process.env.GOOGLE_VISION_URL = "https://vision.googleapis.com";
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          json: async () => ({}),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          json: async () => ({}),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          json: async () => ({}),
+        })
+        .mockResolvedValueOnce(makeSuccessResponse()),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.provenance.source).toBe("google_vision");
+  });
+
+  it("confidence and confidence_level always present in response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(typeof result.confidence).toBe("number");
+    expect(result.confidence).toBeGreaterThanOrEqual(0);
+    expect(result.confidence).toBeLessThanOrEqual(1);
+    expect([
+      "HIGH_CONFIDENCE",
+      "MEDIUM_CONFIDENCE",
+      "LOW_CONFIDENCE",
+    ]).toContain(result.confidence_level);
+  });
+});
+
+// ─── T021: status COMPLETED_WITH_WARNINGS (AC-005) ───────────────────────────
+
+describe("T021 — status field (AC-005)", () => {
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_VISION_URL =
+      "https://api.openai.com/v1/chat/completions";
+    process.env.ALLOW_MOCK_AI = "false";
+    process.env.NODE_ENV = "test";
+    process.env.LOW_CONFIDENCE_THRESHOLD = "0.6";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("status = COMPLETED when all ingredients have high confidence", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("status = COMPLETED_WITH_WARNINGS when any ingredient is low_confidence", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSuccessResponse({
+          ingredients: [
+            {
+              name: "Chicken",
+              quantity_g: 150,
+              confidence: 0.9,
+              calories_kcal: 248,
+              protein_g: 46,
+              carbs_g: 0,
+              fat_g: 5,
+            },
+            {
+              name: "Mystery sauce",
+              quantity_g: 20,
+              confidence: 0.3,
+              calories_kcal: 40,
+              protein_g: 1,
+              carbs_g: 5,
+              fat_g: 1,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.status).toBe("COMPLETED_WITH_WARNINGS");
+  });
+});
+
+// ─── T022: cooking_method normalization in output (AC-009) ───────────────────
+
+describe("T022 — cooking_method in dish_description_structured (AC-009)", () => {
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_VISION_URL =
+      "https://api.openai.com/v1/chat/completions";
+    process.env.ALLOW_MOCK_AI = "false";
+    process.env.NODE_ENV = "test";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("normalizes cooking_method_raw to enum in dish_description_structured", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          makeSuccessResponse({ cooking_method_raw: "GRILLING" }),
+        ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.dish_description_structured.cooking_method).toBe("GRILLED");
+  });
+
+  it("defaults cooking_method to MIXED when raw value is unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          makeSuccessResponse({ cooking_method_raw: "STEAMED_IN_SPACE" }),
+        ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.dish_description_structured.cooking_method).toBe("MIXED");
+  });
+
+  it("estimated_weight_g matches totals.weight_g", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.estimated_weight_g).toBe(result.totals.weight_g);
   });
 });

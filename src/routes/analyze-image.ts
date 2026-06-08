@@ -118,7 +118,14 @@ analyzeImageRouter.post("/", requireAuth, async (req, res, next) => {
     });
 
     return res.json({
-      dish_description: analyzed.dish_description,
+      // Feature 005 contract fields
+      dish_description: analyzed.dish_description_structured,
+      estimated_weight_g: analyzed.estimated_weight_g,
+      confidence: analyzed.confidence,
+      confidence_level: analyzed.confidence_level,
+      provenance: analyzed.provenance,
+      status: analyzed.status,
+      // Preserved for downstream features 006–009
       ingredients: analyzed.ingredients,
       totals: analyzed.totals,
       metadata: analyzed.metadata,

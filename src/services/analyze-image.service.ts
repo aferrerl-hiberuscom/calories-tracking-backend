@@ -42,7 +42,43 @@ export type AnalyzeMetadata = {
   confidence_scores?: number[];
 };
 
+// ─── Feature 005 contract types ──────────────────────────────────────────────
+
+export type CookingMethod =
+  | "FRIED"
+  | "BAKED"
+  | "GRILLED"
+  | "BOILED"
+  | "RAW"
+  | "MIXED";
+export type ConfidenceLevel =
+  | "HIGH_CONFIDENCE"
+  | "MEDIUM_CONFIDENCE"
+  | "LOW_CONFIDENCE";
+export type AnalysisStatus = "COMPLETED" | "COMPLETED_WITH_WARNINGS";
+
+export type DishDescription = {
+  dish_name: string;
+  description: string;
+  cuisine_type: string;
+  cooking_method: CookingMethod;
+};
+
+export type Provenance = {
+  source: "openai_vision" | "google_vision";
+  model: string;
+  processed_at: string; // ISO 8601
+};
+
 export type AnalyzeOutput = {
+  // Feature 005 contract fields
+  dish_description_structured: DishDescription;
+  estimated_weight_g: number;
+  confidence: number;
+  confidence_level: ConfidenceLevel;
+  provenance: Provenance;
+  status: AnalysisStatus;
+  // Preserved for downstream features 006–009
   dish_description: string;
   ingredients: IngredientResult[];
   totals: AnalyzeTotals;
@@ -63,6 +99,10 @@ type RawProviderIngredient = {
 type RawProviderResponse = {
   description?: string;
   dish_description?: string;
+  dish_name?: string;
+  cuisine_type?: string;
+  cooking_method_raw?: string;
+  confidence?: number;
   ingredients?: RawProviderIngredient[];
   total_weight_g?: number;
   calories_kcal?: number;
@@ -141,6 +181,37 @@ function normalizeIngredients(
       fat_g: item.fat_g ?? 0,
     };
   });
+}
+
+export function normalizeCookingMethod(raw: string | undefined): CookingMethod {
+  if (!raw) return "MIXED";
+  const upper = raw.toUpperCase().trim();
+  if (["GRILLING", "GRILL", "GRILLED"].includes(upper)) return "GRILLED";
+  if (["ROASTING", "ROASTED", "BAKING", "BAKED"].includes(upper))
+    return "BAKED";
+  if (["FRYING", "FRIED", "FRITO", "FRITURA"].includes(upper)) return "FRIED";
+  if (["BOILING", "BOILED", "HERVIDO", "COCIDO"].includes(upper))
+    return "BOILED";
+  if (["RAW", "CRUDO", "CRUDA"].includes(upper)) return "RAW";
+  if (["MIXED", "MIXTO", "MIXED_METHODS"].includes(upper)) return "MIXED";
+  // Direct enum match
+  const enumValues: CookingMethod[] = [
+    "FRIED",
+    "BAKED",
+    "GRILLED",
+    "BOILED",
+    "RAW",
+    "MIXED",
+  ];
+  if (enumValues.includes(upper as CookingMethod))
+    return upper as CookingMethod;
+  return "MIXED";
+}
+
+export function classifyConfidenceLevel(confidence: number): ConfidenceLevel {
+  if (confidence >= 0.7) return "HIGH_CONFIDENCE";
+  if (confidence >= 0.5) return "MEDIUM_CONFIDENCE";
+  return "LOW_CONFIDENCE";
 }
 
 function computeTotals(ingredients: IngredientResult[]): AnalyzeTotals {
@@ -283,6 +354,10 @@ async function callProvider(
 function mockAnalyze(input: AnalyzeInput): RawProviderResponse {
   return {
     dish_description: `Mock analysis for ${input.mimeType}`,
+    dish_name: "Mock Dish",
+    cuisine_type: "Unknown",
+    cooking_method_raw: "MIXED",
+    confidence: 0.8,
     ingredients: [
       {
         name: "Mock ingredient",
@@ -402,6 +477,34 @@ export async function analyzeImageWithFallback(
       confidenceScores.length > 0 ? confidenceScores : undefined,
   };
 
+  // Build Feature 005 contract fields
+  const cookingMethod = normalizeCookingMethod(raw.cooking_method_raw);
+  const dishConfidence =
+    raw.confidence ??
+    (confidenceScores.length > 0
+      ? confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length
+      : 0);
+  const confidenceLevel = classifyConfidenceLevel(dishConfidence);
+  const hasLowConfidence = ingredients.some((i) => i.low_confidence);
+
+  const dishDescriptionStructured: DishDescription = {
+    dish_name: raw.dish_name ?? raw.dish_description ?? "Unknown dish",
+    description:
+      raw.dish_description ?? raw.description ?? "No description available",
+    cuisine_type: raw.cuisine_type ?? "Unknown",
+    cooking_method: cookingMethod,
+  };
+
+  const provenance: Provenance = {
+    source: providerName === "openai" ? "openai_vision" : "google_vision",
+    model: modelName,
+    processed_at: metadata.timestamp,
+  };
+
+  const analysisStatus: AnalysisStatus = hasLowConfidence
+    ? "COMPLETED_WITH_WARNINGS"
+    : "COMPLETED";
+
   structuredLog({
     level: "info",
     provider: providerName,
@@ -411,9 +514,18 @@ export async function analyzeImageWithFallback(
     latency_ms,
     status: "success",
     fallback: usedFallback,
+    confidence: dishConfidence,
+    confidence_level: confidenceLevel,
+    analysis_status: analysisStatus,
   });
 
   return {
+    dish_description_structured: dishDescriptionStructured,
+    estimated_weight_g: totals.weight_g,
+    confidence: dishConfidence,
+    confidence_level: confidenceLevel,
+    provenance,
+    status: analysisStatus,
     dish_description: raw.dish_description ?? "Unknown dish",
     ingredients,
     totals,
