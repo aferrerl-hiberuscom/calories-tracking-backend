@@ -8,6 +8,15 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum IngredientSource {
+  VISIBLE
+  INFERRED
+  MANUAL
+  ESTIMATED_GENERIC
+  CONSOLIDATED
+  MISSING
+}
+
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
@@ -16,30 +25,40 @@ model User {
 }
 
 model Meal {
-  id          String    @id @default(uuid())
+  id          String           @id @default(uuid())
   userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   mealDate    DateTime
   status      String
   ingredients Ingredient[]
   nutrition   NutritionalData?
   image       Image?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
 
   @@index([userId, mealDate])
   @@index([userId])
 }
 
 model Ingredient {
-  id            String  @id @default(uuid())
-  mealId        String
-  meal          Meal    @relation(fields: [mealId], references: [id], onDelete: Cascade)
-  name          String
-  quantityG     Float
-  source        String
-  confidence    Float?
-  cookingMethod String?
+  id                 String          @id @default(uuid())
+  mealId             String
+  meal               Meal            @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  name               String          @db.VarChar(120)
+  quantityG          Float
+  source             IngredientSource
+  confidence         Float?
+  quantitySuspicious Boolean         @default(false)
+  cookingMethod      String?         @db.VarChar(20)
+  caloriesKcal       Float           @default(0)
+  carbsG             Float           @default(0)
+  proteinG           Float           @default(0)
+  fatG               Float           @default(0)
+
+  @@index([mealId])
+  @@index([source])
+  @@index([confidence])
+  @@map("meal_ingredients")
 }
 
 model NutritionalData {
@@ -62,3 +81,18 @@ model Image {
   sizeBytes  Int
   createdAt  DateTime @default(now())
 }
+
+model NutritionalReference {
+  id                String   @id @default(uuid())
+  name              String   @db.VarChar(120)
+  category          String   @db.VarChar(60)
+  caloriesPer100g   Float
+  proteinPer100g    Float
+  carbsPer100g      Float
+  fatPer100g        Float
+  aliases           String[]
+
+  @@index([name])
+  @@map("nutritional_reference")
+}
+

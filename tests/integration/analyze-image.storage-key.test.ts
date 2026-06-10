@@ -33,14 +33,29 @@ const USER_UUID_SUCCESS = "00000000-0000-0000-0000-000000000030";
 const USER_UUID_STORE_FAIL = "00000000-0000-0000-0000-000000000040";
 
 const MOCK_ANALYZE_OUTPUT: AnalyzeOutput = {
+  dish_description_structured: {
+    dish_name: "Test dish",
+    description: "Test dish description",
+    cuisine_type: "Unknown",
+    cooking_method: "MIXED",
+  },
+  estimated_weight_g: 100,
+  confidence: 0.9,
+  confidence_level: "HIGH_CONFIDENCE",
+  provenance: {
+    source: "openai_vision",
+    model: "gpt-4o",
+    processed_at: new Date().toISOString(),
+  },
+  status: "COMPLETED",
   dish_description: "Test dish",
   ingredients: [
     {
       name: "Rice",
       quantity_g: 100,
-      source: "ai_inferred",
+      source: "INFERRED",
       confidence: 0.9,
-      low_confidence: false,
+      cooking_method: "MIXED",
       calories_kcal: 120,
       protein_g: 2,
       carbs_g: 26,
@@ -177,7 +192,9 @@ describe("Feature 019 — analyze-image route (image_url)", () => {
       .send({ image_url: SUPABASE_IMAGE_URL, user_id: USER_UUID_SUCCESS });
 
     expect(response.status).toBe(200);
-    expect(response.body.dish_description).toBe("Test dish");
+    expect(response.body.dish_description).toMatchObject({
+      dish_name: "Test dish",
+    });
     expect(response.body.ingredients).toHaveLength(1);
     expect(response.body.totals).toMatchObject({
       weight_g: 100,

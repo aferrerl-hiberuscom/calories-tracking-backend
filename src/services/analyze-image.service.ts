@@ -15,9 +15,9 @@ export type AnalyzeInput = {
 export type IngredientResult = {
   name: string;
   quantity_g: number;
-  source: "ai_inferred" | "source_manual";
+  source: "INFERRED" | "MANUAL" | "INFERRED_PARTIAL";
   confidence: number;
-  low_confidence: boolean;
+  cooking_method: CookingMethod;
   calories_kcal: number;
   protein_g: number;
   carbs_g: number;
@@ -50,7 +50,8 @@ export type CookingMethod =
   | "GRILLED"
   | "BOILED"
   | "RAW"
-  | "MIXED";
+  | "MIXED"
+  | "UNKNOWN";
 export type ConfidenceLevel =
   | "HIGH_CONFIDENCE"
   | "MEDIUM_CONFIDENCE"
@@ -90,6 +91,7 @@ type RawProviderIngredient = {
   name?: string;
   quantity_g?: number;
   confidence?: number;
+  cooking_method?: string;
   calories_kcal?: number;
   protein_g?: number;
   carbs_g?: number;
@@ -140,7 +142,6 @@ class TransientProviderError extends Error {
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRIES = 2;
 const RETRY_BACKOFF_MS = [1_000, 2_000];
-const DEFAULT_LOW_CONFIDENCE_THRESHOLD = 0.6;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -163,18 +164,19 @@ function canUseMockFallback(): boolean {
 
 function normalizeIngredients(
   raw: RawProviderIngredient[],
+  dishCookingMethod: CookingMethod,
 ): IngredientResult[] {
-  const threshold = Number(
-    process.env.LOW_CONFIDENCE_THRESHOLD ?? DEFAULT_LOW_CONFIDENCE_THRESHOLD,
-  );
   return raw.map((item) => {
     const confidence = item.confidence ?? 0;
+    const rawName = (item.name ?? "Unknown").trim();
     return {
-      name: item.name ?? "Unknown",
+      name: rawName.slice(0, 120),
       quantity_g: item.quantity_g ?? 0,
-      source: "ai_inferred" as const,
+      source: "INFERRED" as const,
       confidence,
-      low_confidence: confidence < threshold,
+      cooking_method: item.cooking_method
+        ? normalizeCookingMethod(item.cooking_method)
+        : dishCookingMethod,
       calories_kcal: item.calories_kcal ?? 0,
       protein_g: item.protein_g ?? 0,
       carbs_g: item.carbs_g ?? 0,
@@ -184,7 +186,7 @@ function normalizeIngredients(
 }
 
 export function normalizeCookingMethod(raw: string | undefined): CookingMethod {
-  if (!raw) return "MIXED";
+  if (!raw) return "UNKNOWN";
   const upper = raw.toUpperCase().trim();
   if (["GRILLING", "GRILL", "GRILLED"].includes(upper)) return "GRILLED";
   if (["ROASTING", "ROASTED", "BAKING", "BAKED"].includes(upper))
@@ -202,10 +204,95 @@ export function normalizeCookingMethod(raw: string | undefined): CookingMethod {
     "BOILED",
     "RAW",
     "MIXED",
+    "UNKNOWN",
   ];
   if (enumValues.includes(upper as CookingMethod))
     return upper as CookingMethod;
-  return "MIXED";
+  return "UNKNOWN";
+}
+
+// ─── Feature 006: Duplicate merging ──────────────────────────────────────────
+
+export function deduplicateIngredients(
+  ingredients: IngredientResult[],
+): IngredientResult[] {
+  const map = new Map<string, IngredientResult[]>();
+
+  for (const ing of ingredients) {
+    const key = ing.name.toLowerCase().trim();
+    const group = map.get(key);
+    if (group) {
+      group.push(ing);
+    } else {
+      map.set(key, [ing]);
+    }
+  }
+
+  return Array.from(map.values()).map((group) => {
+    if (group.length === 1) return group[0];
+
+    const totalQty = group.reduce((s, i) => s + i.quantity_g, 0);
+    const weightedConf =
+      totalQty > 0
+        ? group.reduce((s, i) => s + i.confidence * i.quantity_g, 0) / totalQty
+        : group.reduce((s, i) => s + i.confidence, 0) / group.length;
+
+    // cooking_method from the entry with highest quantity_g
+    const dominant = group.reduce((a, b) =>
+      a.quantity_g >= b.quantity_g ? a : b,
+    );
+
+    return {
+      name: group[0].name,
+      quantity_g: totalQty,
+      source: group[0].source,
+      confidence: Math.round(weightedConf * 1000) / 1000,
+      cooking_method: dominant.cooking_method,
+      calories_kcal: group.reduce((s, i) => s + i.calories_kcal, 0),
+      protein_g: group.reduce((s, i) => s + i.protein_g, 0),
+      carbs_g: group.reduce((s, i) => s + i.carbs_g, 0),
+      fat_g: group.reduce((s, i) => s + i.fat_g, 0),
+    };
+  });
+}
+
+// ─── Feature 006: Weight consistency normalization ───────────────────────────
+
+export function normalizeWeightConsistency(
+  ingredients: IngredientResult[],
+  totalWeight: number,
+): {
+  ingredients: IngredientResult[];
+  normalized: boolean;
+  originalTotal: number;
+} {
+  const originalTotal = ingredients.reduce((s, i) => s + i.quantity_g, 0);
+
+  if (ingredients.length === 0 || totalWeight === 0 || originalTotal === 0) {
+    return { ingredients, normalized: false, originalTotal };
+  }
+
+  const diff = Math.abs(originalTotal - totalWeight) / totalWeight;
+
+  if (diff <= 0.1) {
+    return { ingredients, normalized: false, originalTotal };
+  }
+
+  const factor = totalWeight / originalTotal;
+  const scaled = ingredients.map((ing) => {
+    const qty = Math.round(ing.quantity_g * factor * 100) / 100;
+    const ratio = qty / (ing.quantity_g || 1);
+    return {
+      ...ing,
+      quantity_g: qty,
+      calories_kcal: Math.round(ing.calories_kcal * ratio * 100) / 100,
+      protein_g: Math.round(ing.protein_g * ratio * 100) / 100,
+      carbs_g: Math.round(ing.carbs_g * ratio * 100) / 100,
+      fat_g: Math.round(ing.fat_g * ratio * 100) / 100,
+    };
+  });
+
+  return { ingredients: scaled, normalized: true, originalTotal };
 }
 
 export function classifyConfidenceLevel(confidence: number): ConfidenceLevel {
@@ -363,6 +450,7 @@ function mockAnalyze(input: AnalyzeInput): RawProviderResponse {
         name: "Mock ingredient",
         quantity_g: 100,
         confidence: 0.9,
+        cooking_method: "MIXED",
         calories_kcal: 200,
         protein_g: 10,
         carbs_g: 25,
@@ -462,7 +550,17 @@ export async function analyzeImageWithFallback(
   }
 
   // Normalize response
-  const ingredients = normalizeIngredients(raw.ingredients ?? []);
+  const cookingMethod = normalizeCookingMethod(raw.cooking_method_raw);
+  const rawIngredients = normalizeIngredients(
+    raw.ingredients ?? [],
+    cookingMethod,
+  );
+  const deduped = deduplicateIngredients(rawIngredients);
+  const weightResult = normalizeWeightConsistency(
+    deduped,
+    raw.total_weight_g ?? 0,
+  );
+  const ingredients = weightResult.ingredients;
   const totals = computeTotals(ingredients);
   const confidenceScores = ingredients.map((i) => i.confidence);
 
@@ -477,15 +575,14 @@ export async function analyzeImageWithFallback(
       confidenceScores.length > 0 ? confidenceScores : undefined,
   };
 
-  // Build Feature 005 contract fields
-  const cookingMethod = normalizeCookingMethod(raw.cooking_method_raw);
+  // Build Feature 005+006 contract fields
   const dishConfidence =
     raw.confidence ??
     (confidenceScores.length > 0
       ? confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length
       : 0);
   const confidenceLevel = classifyConfidenceLevel(dishConfidence);
-  const hasLowConfidence = ingredients.some((i) => i.low_confidence);
+  const hasLowConfidence = ingredients.some((i) => i.confidence < 0.5);
 
   const dishDescriptionStructured: DishDescription = {
     dish_name: raw.dish_name ?? raw.dish_description ?? "Unknown dish",

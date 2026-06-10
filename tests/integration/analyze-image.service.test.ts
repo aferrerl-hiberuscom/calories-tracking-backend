@@ -10,6 +10,10 @@
  * Tests T020: provenance fields (AC-008)
  * Tests T021: status COMPLETED_WITH_WARNINGS (AC-005)
  * Tests T022: cooking_method normalization in output (AC-009)
+ * Tests T023: deduplicateIngredients — Feature 006 (BR-010)
+ * Tests T024: normalizeWeightConsistency — Feature 006 (BR-011)
+ * Tests T025: ingredient source and cooking_method — Feature 006
+ * Tests T026: ingredient name max 120 chars — Feature 006
  */
 
 import { createHash } from "crypto";
@@ -18,6 +22,8 @@ import {
   analyzeImageWithFallback,
   normalizeCookingMethod,
   classifyConfidenceLevel,
+  deduplicateIngredients,
+  normalizeWeightConsistency,
 } from "../../src/services/analyze-image.service";
 import type { AnalyzeInput } from "../../src/services/analyze-image.service";
 
@@ -347,13 +353,12 @@ describe("T017 — response shape (contract compliance)", () => {
       expect(ing).toHaveProperty("quantity_g");
       expect(ing).toHaveProperty("source");
       expect(ing).toHaveProperty("confidence");
-      expect(ing).toHaveProperty("low_confidence");
+      expect(ing).toHaveProperty("cooking_method");
       expect(ing).toHaveProperty("calories_kcal");
       expect(ing).toHaveProperty("protein_g");
       expect(ing).toHaveProperty("carbs_g");
       expect(ing).toHaveProperty("fat_g");
-      expect(ing.source).toBe("ai_inferred");
-      expect(typeof ing.low_confidence).toBe("boolean");
+      expect(ing.source).toBe("INFERRED");
       expect(ing.quantity_g).toBeGreaterThan(0);
     }
   });
@@ -423,11 +428,11 @@ describe("T017 — response shape (contract compliance)", () => {
 
     const result = await analyzeImageWithFallback(VALID_INPUT);
 
-    expect(result.ingredients[0].low_confidence).toBe(false); // 0.95 >= 0.6
-    expect(result.ingredients[1].low_confidence).toBe(true); // 0.4 < 0.6
+    expect(result.ingredients[0].confidence).toBeGreaterThanOrEqual(0.5); // 0.95 >= 0.5
+    expect(result.ingredients[1].confidence).toBeLessThan(0.5); // 0.4 < 0.5
   });
 
-  it("AC-4: ingredient with confidence exactly at threshold is NOT low_confidence", async () => {
+  it("AC-4: ingredient with confidence exactly at 0.5 is not low confidence", async () => {
     process.env.LOW_CONFIDENCE_THRESHOLD = "0.6";
     vi.stubGlobal(
       "fetch",
@@ -450,7 +455,7 @@ describe("T017 — response shape (contract compliance)", () => {
 
     const result = await analyzeImageWithFallback(VALID_INPUT);
 
-    expect(result.ingredients[0].low_confidence).toBe(false); // exactly at threshold → not flagged
+    expect(result.ingredients[0].confidence).toBeGreaterThanOrEqual(0.5); // 0.6 >= threshold
   });
 });
 
@@ -475,9 +480,9 @@ describe("T018 — normalizeCookingMethod (AC-009)", () => {
     ["RAW", "RAW"],
     ["CRUDO", "RAW"],
     ["MIXED", "MIXED"],
-    ["unknown value", "MIXED"],
-    [undefined, "MIXED"],
-    ["", "MIXED"],
+    ["unknown value", "UNKNOWN"],
+    [undefined, "UNKNOWN"],
+    ["", "UNKNOWN"],
   ])("normalizes %s → %s", (input, expected) => {
     expect(normalizeCookingMethod(input)).toBe(expected);
   });
@@ -660,7 +665,7 @@ describe("T022 — cooking_method in dish_description_structured (AC-009)", () =
     expect(result.dish_description_structured.cooking_method).toBe("GRILLED");
   });
 
-  it("defaults cooking_method to MIXED when raw value is unknown", async () => {
+  it("defaults cooking_method to UNKNOWN when raw value is unrecognized", async () => {
     vi.stubGlobal(
       "fetch",
       vi
@@ -672,7 +677,7 @@ describe("T022 — cooking_method in dish_description_structured (AC-009)", () =
 
     const result = await analyzeImageWithFallback(VALID_INPUT);
 
-    expect(result.dish_description_structured.cooking_method).toBe("MIXED");
+    expect(result.dish_description_structured.cooking_method).toBe("UNKNOWN");
   });
 
   it("estimated_weight_g matches totals.weight_g", async () => {
@@ -681,5 +686,322 @@ describe("T022 — cooking_method in dish_description_structured (AC-009)", () =
     const result = await analyzeImageWithFallback(VALID_INPUT);
 
     expect(result.estimated_weight_g).toBe(result.totals.weight_g);
+  });
+});
+
+// ─── T023: deduplicateIngredients (BR-010) ───────────────────────────────────
+
+describe("T023 — deduplicateIngredients (Feature 006 BR-010)", () => {
+  const base = {
+    source: "INFERRED" as const,
+    cooking_method: "GRILLED" as const,
+    calories_kcal: 100,
+    protein_g: 10,
+    carbs_g: 10,
+    fat_g: 5,
+  };
+
+  it("merges ingredients with same name (case-insensitive)", () => {
+    const result = deduplicateIngredients([
+      { ...base, name: "Chicken", quantity_g: 100, confidence: 0.9 },
+      { ...base, name: "chicken", quantity_g: 50, confidence: 0.8 },
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].quantity_g).toBe(150);
+    expect(result[0].calories_kcal).toBe(200);
+  });
+
+  it("computes confidence as weighted average by quantity_g", () => {
+    const result = deduplicateIngredients([
+      { ...base, name: "Rice", quantity_g: 100, confidence: 0.9 },
+      { ...base, name: "rice", quantity_g: 100, confidence: 0.7 },
+    ]);
+
+    expect(result[0].confidence).toBeCloseTo(0.8, 2);
+  });
+
+  it("takes cooking_method from ingredient with highest quantity_g", () => {
+    const result = deduplicateIngredients([
+      {
+        ...base,
+        name: "Pork",
+        quantity_g: 50,
+        confidence: 0.9,
+        cooking_method: "FRIED" as const,
+      },
+      {
+        ...base,
+        name: "pork",
+        quantity_g: 150,
+        confidence: 0.7,
+        cooking_method: "BOILED" as const,
+      },
+    ]);
+
+    expect(result[0].cooking_method).toBe("BOILED");
+  });
+
+  it("does not merge ingredients with different names", () => {
+    const result = deduplicateIngredients([
+      { ...base, name: "Chicken", quantity_g: 100, confidence: 0.9 },
+      { ...base, name: "Lettuce", quantity_g: 50, confidence: 0.8 },
+    ]);
+
+    expect(result).toHaveLength(2);
+  });
+
+  it("returns unchanged list when no duplicates", () => {
+    const input = [{ ...base, name: "Egg", quantity_g: 60, confidence: 0.95 }];
+    const result = deduplicateIngredients(input);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("Egg");
+    expect(result[0].quantity_g).toBe(60);
+  });
+
+  it("handles empty array", () => {
+    expect(deduplicateIngredients([])).toEqual([]);
+  });
+
+  it("sums all nutritional values for merged duplicates", () => {
+    const result = deduplicateIngredients([
+      {
+        ...base,
+        name: "Tomato",
+        quantity_g: 100,
+        confidence: 0.8,
+        calories_kcal: 20,
+        protein_g: 1,
+        carbs_g: 4,
+        fat_g: 0,
+      },
+      {
+        ...base,
+        name: "tomato",
+        quantity_g: 50,
+        confidence: 0.7,
+        calories_kcal: 10,
+        protein_g: 0.5,
+        carbs_g: 2,
+        fat_g: 0,
+      },
+    ]);
+
+    expect(result[0].calories_kcal).toBeCloseTo(30);
+    expect(result[0].protein_g).toBeCloseTo(1.5);
+    expect(result[0].carbs_g).toBeCloseTo(6);
+    expect(result[0].fat_g).toBeCloseTo(0);
+  });
+});
+
+// ─── T024: normalizeWeightConsistency (BR-011) ───────────────────────────────
+
+describe("T024 — normalizeWeightConsistency (Feature 006 BR-011)", () => {
+  const makeIngredients = (quantities: number[]) =>
+    quantities.map((q, i) => ({
+      name: `Ingredient ${i}`,
+      quantity_g: q,
+      source: "INFERRED" as const,
+      confidence: 0.8,
+      cooking_method: "MIXED" as const,
+      calories_kcal: q * 2,
+      protein_g: q * 0.1,
+      carbs_g: q * 0.3,
+      fat_g: q * 0.05,
+    }));
+
+  it("returns normalized=false when diff <= 10%", () => {
+    // Sum = 200, totalWeight = 205 → diff = 2.5%
+    const ingredients = makeIngredients([100, 100]);
+    const result = normalizeWeightConsistency(ingredients, 205);
+
+    expect(result.normalized).toBe(false);
+    expect(result.ingredients).toBe(ingredients);
+  });
+
+  it("returns normalized=true and scales when diff > 10%", () => {
+    // Sum = 200, totalWeight = 400 → diff = 100%
+    const ingredients = makeIngredients([100, 100]);
+    const result = normalizeWeightConsistency(ingredients, 400);
+
+    expect(result.normalized).toBe(true);
+    const newSum = result.ingredients.reduce((s, i) => s + i.quantity_g, 0);
+    expect(newSum).toBeCloseTo(400, 0);
+  });
+
+  it("scales quantities proportionally", () => {
+    // Sum = 100, totalWeight = 200 → each quantity should double
+    const ingredients = makeIngredients([40, 60]);
+    const result = normalizeWeightConsistency(ingredients, 200);
+
+    expect(result.ingredients[0].quantity_g).toBeCloseTo(80, 1);
+    expect(result.ingredients[1].quantity_g).toBeCloseTo(120, 1);
+  });
+
+  it("scales nutritional values proportionally", () => {
+    const ingredients = makeIngredients([100]);
+    const result = normalizeWeightConsistency(ingredients, 200);
+
+    expect(result.ingredients[0].calories_kcal).toBeCloseTo(400, 0);
+    expect(result.ingredients[0].protein_g).toBeCloseTo(20, 0);
+  });
+
+  it("always returns originalTotal pre-normalization sum", () => {
+    const ingredients = makeIngredients([100, 50]);
+    const result = normalizeWeightConsistency(ingredients, 500);
+
+    expect(result.originalTotal).toBe(150);
+  });
+
+  it("handles empty ingredients safely", () => {
+    const result = normalizeWeightConsistency([], 300);
+
+    expect(result.normalized).toBe(false);
+    expect(result.ingredients).toEqual([]);
+  });
+
+  it("handles totalWeight === 0 safely", () => {
+    const ingredients = makeIngredients([100]);
+    const result = normalizeWeightConsistency(ingredients, 0);
+
+    expect(result.normalized).toBe(false);
+  });
+});
+
+// ─── T025: ingredient source and cooking_method (Feature 006) ────────────────
+
+describe("T025 — ingredient source and cooking_method (Feature 006)", () => {
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_VISION_URL =
+      "https://api.openai.com/v1/chat/completions";
+    process.env.ALLOW_MOCK_AI = "false";
+    process.env.NODE_ENV = "test";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('all ingredients have source === "INFERRED"', async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    for (const ing of result.ingredients) {
+      expect(ing.source).toBe("INFERRED");
+    }
+  });
+
+  it("all ingredients have cooking_method field", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    for (const ing of result.ingredients) {
+      expect(ing).toHaveProperty("cooking_method");
+      expect(typeof ing.cooking_method).toBe("string");
+      expect(ing.cooking_method.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("ingredient inherits dish cooking_method when not per-ingredient", async () => {
+    // makeSuccessResponse ingredients have no per-ingredient cooking_method
+    // dish cooking_method_raw = "GRILLED"
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          makeSuccessResponse({ cooking_method_raw: "GRILLED" }),
+        ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    for (const ing of result.ingredients) {
+      expect(ing.cooking_method).toBe("GRILLED");
+    }
+  });
+
+  it("ingredient uses its own cooking_method when provided", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSuccessResponse({
+          cooking_method_raw: "GRILLED",
+          ingredients: [
+            {
+              name: "Potato",
+              quantity_g: 150,
+              confidence: 0.9,
+              cooking_method: "FRIED",
+              calories_kcal: 200,
+              protein_g: 3,
+              carbs_g: 30,
+              fat_g: 8,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.ingredients[0].cooking_method).toBe("FRIED");
+  });
+});
+
+// ─── T026: ingredient name max 120 chars (Feature 006) ───────────────────────
+
+describe("T026 — ingredient name max 120 chars (Feature 006)", () => {
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_VISION_URL =
+      "https://api.openai.com/v1/chat/completions";
+    process.env.ALLOW_MOCK_AI = "false";
+    process.env.NODE_ENV = "test";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("truncates ingredient name longer than 120 chars", async () => {
+    const longName = "A".repeat(150);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSuccessResponse({
+          ingredients: [
+            {
+              name: longName,
+              quantity_g: 100,
+              confidence: 0.9,
+              calories_kcal: 100,
+              protein_g: 5,
+              carbs_g: 10,
+              fat_g: 2,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    expect(result.ingredients[0].name.length).toBeLessThanOrEqual(120);
+    expect(result.ingredients[0].name).toBe("A".repeat(120));
+  });
+
+  it("preserves ingredient name shorter than 120 chars", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSuccessResponse()));
+
+    const result = await analyzeImageWithFallback(VALID_INPUT);
+
+    for (const ing of result.ingredients) {
+      expect(ing.name.length).toBeLessThanOrEqual(120);
+    }
   });
 });

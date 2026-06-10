@@ -4,6 +4,11 @@ import { getRequiredUserId, requireAuth } from "../middleware/auth";
 import { ApiError } from "../middleware/api-error";
 import { prisma } from "../lib/prisma";
 import { deleteImage } from "../services/storage.service";
+import { rateLimit } from "../middleware/rate-limit";
+import {
+  postEstimateQuantities,
+  putIngredientQuantity,
+} from "../controllers/estimateQuantities.controller";
 
 export const mealsRouter = Router();
 
@@ -208,7 +213,8 @@ mealsRouter.post("/", requireAuth, async (req, res, next) => {
           mealId: meal.id,
           name: ingredient.name,
           quantityG: ingredient.quantity_g,
-          source: ingredient.source,
+          source:
+            ingredient.source.toUpperCase() as import("@prisma/client").IngredientSource,
           confidence: ingredient.confidence,
           cookingMethod: ingredient.cooking_method,
         })),
@@ -285,7 +291,8 @@ mealsRouter.put("/:id", requireAuth, async (req, res, next) => {
           mealId: meal.id,
           name: ingredient.name,
           quantityG: ingredient.quantity_g,
-          source: ingredient.source,
+          source:
+            ingredient.source.toUpperCase() as import("@prisma/client").IngredientSource,
           confidence: ingredient.confidence,
           cookingMethod: ingredient.cooking_method,
         })),
@@ -356,3 +363,18 @@ mealsRouter.delete("/:id", requireAuth, async (req, res, next) => {
     return next(error);
   }
 });
+
+// ─── Feature 007: Estimate Quantities ─────────────────────────────────────────
+
+mealsRouter.post(
+  "/:mealId/estimate-quantities",
+  requireAuth,
+  rateLimit({ max: 10, windowMs: 60_000 }),
+  postEstimateQuantities,
+);
+
+mealsRouter.put(
+  "/:mealId/ingredients/:ingredientId/quantity",
+  requireAuth,
+  putIngredientQuantity,
+);
