@@ -54,6 +54,14 @@ model Ingredient {
   carbsG             Float           @default(0)
   proteinG           Float           @default(0)
   fatG               Float           @default(0)
+  // Feature 008 — nutritional calculation fields
+  nutritionSuspicious Boolean        @default(false)
+  allergen           Boolean         @default(false)
+  allergenList       String[]        @default([])
+  dietaryType        String?         @db.VarChar(20)
+  discrepancyDetected Boolean        @default(false)
+  aiCaloriesKcal     Float?
+  dbCaloriesKcal     Float?
 
   @@index([mealId])
   @@index([source])

@@ -9,6 +9,7 @@ import {
   postEstimateQuantities,
   putIngredientQuantity,
 } from "../controllers/estimateQuantities.controller";
+import { calculateCalories } from "../services/calculateCalories.service";
 
 export const mealsRouter = Router();
 
@@ -377,4 +378,113 @@ mealsRouter.put(
   "/:mealId/ingredients/:ingredientId/quantity",
   requireAuth,
   putIngredientQuantity,
+);
+
+// ─── Feature 008: Calculate Calories ──────────────────────────────────────────
+
+const CalculateNutritionRequestSchema = z.object({
+  ingredients: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(120),
+        quantity_g: z.number().nonnegative(),
+        confidence: z.number().min(0).max(1),
+        source: z.string().min(1),
+        calories_kcal: z.number().nonnegative().optional(),
+        protein_g: z.number().nonnegative().optional(),
+        carbs_g: z.number().nonnegative().optional(),
+        fat_g: z.number().nonnegative().optional(),
+      }),
+    )
+    .min(1),
+});
+
+mealsRouter.post(
+  "/:mealId/calculate-nutrition",
+  requireAuth,
+  rateLimit({ max: 10, windowMs: 60_000 }),
+  async (req, res, next) => {
+    const userId = getRequiredUserId(req);
+    const mealId = resolveParamId(req.params.mealId);
+
+    const parsed = CalculateNutritionRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return next(
+        new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "Invalid calculate-nutrition payload",
+        ),
+      );
+    }
+
+    try {
+      // Ownership check — contract invariant 5
+      const meal = await prisma.meal.findUnique({ where: { id: mealId } });
+      if (!meal) {
+        return next(new ApiError(404, "NOT_FOUND", "Meal not found"));
+      }
+      if (meal.userId !== userId) {
+        return next(
+          new ApiError(
+            403,
+            "FORBIDDEN",
+            "Meal does not belong to authenticated user",
+          ),
+        );
+      }
+
+      const result = await calculateCalories(mealId, parsed.data.ingredients);
+
+      // Persist calculated nutritional values to DB (contract invariant 6: audit trail)
+      await prisma.$transaction(async (tx) => {
+        // Update per-ingredient nutritional values
+        for (const ing of result.ingredients) {
+          await tx.ingredient.updateMany({
+            where: {
+              mealId,
+              name: ing.name,
+            },
+            data: {
+              caloriesKcal: ing.calories_kcal,
+              proteinG: ing.protein_g,
+              carbsG: ing.carbs_g,
+              fatG: ing.fat_g,
+              nutritionSuspicious: ing.nutrition_suspicious,
+              allergen: ing.allergen,
+              allergenList: ing.allergen_list,
+              dietaryType: ing.dietary_type ?? null,
+              discrepancyDetected: ing.discrepancy_detected,
+              aiCaloriesKcal: ing.ai_calories_kcal ?? null,
+              dbCaloriesKcal: ing.db_calories_kcal ?? null,
+            },
+          });
+        }
+
+        // Upsert meal-level nutritional totals
+        await tx.nutritionalData.upsert({
+          where: { mealId },
+          create: {
+            mealId,
+            caloriesKcal: result.totals.total_calories_kcal,
+            proteinG: result.totals.total_protein_g,
+            carbsG: result.totals.total_carbs_g,
+            fatG: result.totals.total_fat_g,
+            totalWeightG: result.totals.total_weight_g,
+          },
+          update: {
+            caloriesKcal: result.totals.total_calories_kcal,
+            proteinG: result.totals.total_protein_g,
+            carbsG: result.totals.total_carbs_g,
+            fatG: result.totals.total_fat_g,
+            totalWeightG: result.totals.total_weight_g,
+          },
+        });
+      });
+
+      return res.json(result);
+    } catch (error) {
+      return next(error);
+    }
+  },
 );
