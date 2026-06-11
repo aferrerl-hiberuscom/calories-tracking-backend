@@ -23,6 +23,11 @@ const MealPayloadSchema = z.object({
         source: z.enum(["visible", "inferred", "manual"]),
         confidence: z.number().min(0).max(1).optional(),
         cooking_method: z.string().optional(),
+        // Feature 009: per-ingredient macro values (optional for backward compatibility)
+        calories_kcal: z.number().nonnegative().optional(),
+        protein_g: z.number().nonnegative().optional(),
+        carbs_g: z.number().nonnegative().optional(),
+        fat_g: z.number().nonnegative().optional(),
       }),
     )
     .min(1),
@@ -218,6 +223,11 @@ mealsRouter.post("/", requireAuth, async (req, res, next) => {
             ingredient.source.toUpperCase() as import("@prisma/client").IngredientSource,
           confidence: ingredient.confidence,
           cookingMethod: ingredient.cooking_method,
+          // Feature 009: persist per-ingredient macros when provided
+          caloriesKcal: ingredient.calories_kcal ?? 0,
+          proteinG: ingredient.protein_g ?? 0,
+          carbsG: ingredient.carbs_g ?? 0,
+          fatG: ingredient.fat_g ?? 0,
         })),
       });
 
@@ -296,6 +306,11 @@ mealsRouter.put("/:id", requireAuth, async (req, res, next) => {
             ingredient.source.toUpperCase() as import("@prisma/client").IngredientSource,
           confidence: ingredient.confidence,
           cookingMethod: ingredient.cooking_method,
+          // Feature 009: persist per-ingredient macros; source=MANUAL when user edited
+          caloriesKcal: ingredient.calories_kcal ?? 0,
+          proteinG: ingredient.protein_g ?? 0,
+          carbsG: ingredient.carbs_g ?? 0,
+          fatG: ingredient.fat_g ?? 0,
         })),
       });
 
