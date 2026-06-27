@@ -135,6 +135,49 @@ describe("Persistence: POST /api/v1/meals", () => {
   });
 });
 
+describe("Persistence: POST /api/v1/meals — rate limiting (T005)", () => {
+  beforeEach(() => {
+    process.env.JWT_SECRET = "change-me";
+    process.env.REDIS_URL = "";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns 429 when rate limit is exceeded for the same user", async () => {
+    // Mock the RateLimiterMemory consume so it rejects on the very first call
+    // (simulates the user already having exhausted 60 req/min).
+    const { RateLimiterMemory } = await import("rate-limiter-flexible");
+    vi.spyOn(RateLimiterMemory.prototype, "consume").mockRejectedValueOnce(
+      // rate-limiter-flexible throws a RateLimiterRes (not an Error) on excess
+      { remainingPoints: 0, msBeforeNext: 30_000 },
+    );
+
+    vi.spyOn(prisma, "$transaction").mockImplementation(
+      async (fn: (tx: unknown) => Promise<{ id: string }>) => {
+        return fn({
+          meal: { create: vi.fn().mockResolvedValue({ id: "should-not-reach" }) },
+          ingredient: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          nutritionalData: { create: vi.fn().mockResolvedValue({}) },
+          image: { create: vi.fn().mockResolvedValue({}) },
+        });
+      },
+    );
+
+    const { createApp } = await import("../../src/app");
+    const app = createApp();
+
+    const response = await request(app)
+      .post("/api/v1/meals")
+      .set("Authorization", `Bearer ${buildToken(USER_A)}`)
+      .send(validMealPayload);
+
+    expect(response.status).toBe(429);
+    expect(response.body.code).toBe("RATE_LIMIT_EXCEEDED");
+  });
+});
+
 describe("Persistence: GET /api/v1/meals (list)", () => {
   beforeEach(() => {
     process.env.JWT_SECRET = "change-me";

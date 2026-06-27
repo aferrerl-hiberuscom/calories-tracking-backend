@@ -189,7 +189,7 @@ mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
   }
 });
 
-mealsRouter.post("/", requireAuth, async (req, res, next) => {
+mealsRouter.post("/", requireAuth, rateLimit({ max: 60, windowMs: 60_000 }), async (req, res, next) => {
   const parsed = MealPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
     return next(new ApiError(400, "VALIDATION_ERROR", "Invalid meal payload"));
