@@ -6,6 +6,7 @@ import { dashboardRouter } from "./routes/dashboard";
 import { healthRouter } from "./routes/health";
 import { imagesRouter } from "./routes/images";
 import { mealsRouter } from "./routes/meals";
+import { nutritionRouter, ingredientsRouter } from "./routes/nutrition";
 import { errorHandler } from "./middleware/error-handler";
 import { rateLimit } from "./middleware/rate-limit";
 import { requestLogger } from "./middleware/request-logger";
@@ -43,6 +44,18 @@ export function createApp() {
     "/api/v1/dashboard",
     rateLimit({ max: 60, windowMs: 60_000 }),
     dashboardRouter,
+  );
+  // Feature 011: nutrition lookup (5 req/sec = 300 req/min per user, per contract §Non-Functional)
+  app.use(
+    "/api/v1/nutrition",
+    rateLimit({ max: 5, windowMs: 1_000 }),
+    nutritionRouter,
+  );
+  // Feature 011: ingredient confirm (standard rate limit)
+  app.use(
+    "/api/v1/ingredients",
+    rateLimit({ max: 60, windowMs: 60_000 }),
+    ingredientsRouter,
   );
 
   app.use(errorHandler);
