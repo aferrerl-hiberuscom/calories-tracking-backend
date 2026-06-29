@@ -19,7 +19,42 @@ export const mealsRouter = Router();
 const ListMealsQuerySchema = z.object({
   start_date: z.string().datetime().optional(),
   end_date: z.string().datetime().optional(),
+  // Feature 014: offset pagination for meal history. Opt-in via `limit`.
+  // When `limit` is absent, the legacy date-range behaviour is preserved.
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
 });
+
+// Feature 014: shared mapping for a meal list item (history cards need image + macros).
+function mapMealListItem(meal: {
+  id: string;
+  mealDate: Date;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+  nutrition: {
+    caloriesKcal: number;
+    proteinG: number;
+    carbsG: number;
+    fatG: number;
+    totalWeightG: number;
+  } | null;
+  image?: { storageKey: string } | null;
+}) {
+  return {
+    meal_id: meal.id,
+    meal_date: meal.mealDate.toISOString(),
+    status: meal.status,
+    calories_kcal: meal.nutrition?.caloriesKcal ?? 0,
+    protein_g: meal.nutrition?.proteinG ?? 0,
+    carbs_g: meal.nutrition?.carbsG ?? 0,
+    fat_g: meal.nutrition?.fatG ?? 0,
+    total_weight_g: meal.nutrition?.totalWeightG ?? 0,
+    image: meal.image ? { storage_key: meal.image.storageKey } : null,
+    created_at: meal.createdAt.toISOString(),
+    updated_at: meal.updatedAt.toISOString(),
+  };
+}
 
 function resolveParamId(value: string | string[] | undefined): string {
   if (typeof value === "string") {
@@ -40,23 +75,25 @@ mealsRouter.get("/", requireAuth, async (req, res, next) => {
   }
 
   const userId = getRequiredUserId(req);
-  const now = new Date();
-  const startDate = parsed.data.start_date
-    ? new Date(parsed.data.start_date)
-    : new Date(
-        Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate(),
-          0,
-          0,
-          0,
-          0,
-        ),
-      );
-  const endDate = parsed.data.end_date
-    ? new Date(parsed.data.end_date)
-    : new Date(
+  const { start_date, end_date, limit, offset } = parsed.data;
+  const paginationMode = limit !== undefined;
+
+  // Build the meal-date filter:
+  //  - explicit start/end always apply (range query)
+  //  - otherwise, only the legacy today-default applies (non-pagination mode)
+  //  - in pagination mode without dates → no date filter (full history)
+  let mealDateFilter: { gte?: Date; lte?: Date } | undefined;
+  if (start_date || end_date) {
+    mealDateFilter = {};
+    if (start_date) mealDateFilter.gte = new Date(start_date);
+    if (end_date) mealDateFilter.lte = new Date(end_date);
+  } else if (!paginationMode) {
+    const now = new Date();
+    mealDateFilter = {
+      gte: new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0),
+      ),
+      lte: new Date(
         Date.UTC(
           now.getUTCFullYear(),
           now.getUTCMonth(),
@@ -66,32 +103,47 @@ mealsRouter.get("/", requireAuth, async (req, res, next) => {
           59,
           999,
         ),
-      );
+      ),
+    };
+  }
+
+  const where = {
+    userId,
+    status: "confirmed",
+    ...(mealDateFilter ? { mealDate: mealDateFilter } : {}),
+  };
 
   try {
+    if (paginationMode) {
+      const skip = offset ?? 0;
+      const [meals, total] = await Promise.all([
+        prisma.meal.findMany({
+          where,
+          include: { nutrition: true, image: true },
+          orderBy: { mealDate: "desc" },
+          take: limit,
+          skip,
+        }),
+        prisma.meal.count({ where }),
+      ]);
+
+      return res.json({
+        meals: meals.map(mapMealListItem),
+        count: meals.length,
+        total,
+        limit,
+        offset: skip,
+      });
+    }
+
     const meals = await prisma.meal.findMany({
-      where: {
-        userId,
-        status: "confirmed",
-        mealDate: { gte: startDate, lte: endDate },
-      },
-      include: { nutrition: true },
+      where,
+      include: { nutrition: true, image: true },
       orderBy: { mealDate: "desc" },
     });
 
     return res.json({
-      meals: meals.map((meal) => ({
-        meal_id: meal.id,
-        meal_date: meal.mealDate.toISOString(),
-        status: meal.status,
-        calories_kcal: meal.nutrition?.caloriesKcal ?? 0,
-        protein_g: meal.nutrition?.proteinG ?? 0,
-        carbs_g: meal.nutrition?.carbsG ?? 0,
-        fat_g: meal.nutrition?.fatG ?? 0,
-        total_weight_g: meal.nutrition?.totalWeightG ?? 0,
-        created_at: meal.createdAt.toISOString(),
-        updated_at: meal.updatedAt.toISOString(),
-      })),
+      meals: meals.map(mapMealListItem),
       count: meals.length,
     });
   } catch (error) {
@@ -187,9 +239,27 @@ const UpdateMealPayloadSchema = z.object({
     fat_g: z.number().nonnegative(),
     total_weight_g: z.number().nonnegative(),
   }),
+  // Feature 014 (BR-017): the meal date is an editable field.
+  meal_date: z.string().datetime().optional(),
 });
 
 mealsRouter.put("/:id", requireAuth, async (req, res, next) => {
+  // Feature 014 (BR-018 / contract Cond. 5): the image is NOT editable.
+  // Reject any attempt to change it instead of silently ignoring it.
+  if (
+    req.body &&
+    typeof req.body === "object" &&
+    ("image" in req.body || "image_url" in req.body)
+  ) {
+    return next(
+      new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "Image cannot be changed; create a new meal to use a different image",
+      ),
+    );
+  }
+
   const parsed = UpdateMealPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
     return next(
@@ -216,6 +286,14 @@ mealsRouter.put("/:id", requireAuth, async (req, res, next) => {
     }
 
     await prisma.$transaction(async (tx) => {
+      // Feature 014 (BR-017): persist edited meal date when provided.
+      if (parsed.data.meal_date !== undefined) {
+        await tx.meal.update({
+          where: { id: meal.id },
+          data: { mealDate: new Date(parsed.data.meal_date) },
+        });
+      }
+
       await tx.ingredient.deleteMany({ where: { mealId: meal.id } });
       await tx.ingredient.createMany({
         data: parsed.data.ingredients.map((ingredient) => ({
