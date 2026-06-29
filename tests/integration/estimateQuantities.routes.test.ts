@@ -42,8 +42,9 @@ describe("POST /api/v1/meals/:mealId/estimate-quantities", () => {
   it("returns 400 with empty ingredients array", async () => {
     const { createApp } = await import("../../src/app");
     const app = createApp();
+    const { prisma: p } = await import("../../src/lib/prisma");
 
-    vi.spyOn(prisma.meal, "findUnique").mockResolvedValue({
+    vi.spyOn(p.meal, "findUnique").mockResolvedValue({
       id: "meal-1",
       userId: TEST_USER_ID,
       mealDate: new Date(),
@@ -80,19 +81,20 @@ describe("POST /api/v1/meals/:mealId/estimate-quantities", () => {
   });
 
   it("returns 503 when OpenAI Vision fails", async () => {
-    vi.doMock("../../src/integrations/openAIVisionClient.js", () => ({
-      analyzePortions: vi.fn().mockRejectedValue(
-        Object.assign(new Error("Vision API unavailable after 2 attempts"), {
-          name: "VisionApiError",
-        }),
-      ),
-      VisionApiError: class VisionApiError extends Error {
+    vi.doMock("../../src/integrations/openAIVisionClient.js", () => {
+      class VisionApiError extends Error {
         constructor(msg: string) {
           super(msg);
           this.name = "VisionApiError";
         }
-      },
-    }));
+      }
+      return {
+        analyzePortions: vi.fn().mockRejectedValue(
+          new VisionApiError("Vision API unavailable after 2 attempts"),
+        ),
+        VisionApiError,
+      };
+    });
 
     const { createApp } = await import("../../src/app");
     const app = createApp();
@@ -167,6 +169,7 @@ describe("POST /api/v1/meals/:mealId/estimate-quantities", () => {
 
 describe("PUT /api/v1/meals/:mealId/ingredients/:ingredientId/quantity", () => {
   beforeEach(() => {
+    vi.resetModules();
     process.env.JWT_SECRET = "change-me";
     process.env.REDIS_URL = "";
   });
@@ -189,8 +192,9 @@ describe("PUT /api/v1/meals/:mealId/ingredients/:ingredientId/quantity", () => {
   it("returns 400 with quantity_g=0 (out of range)", async () => {
     const { createApp } = await import("../../src/app");
     const app = createApp();
+    const { prisma: p } = await import("../../src/lib/prisma");
 
-    vi.spyOn(prisma.meal, "findUnique").mockResolvedValue({
+    vi.spyOn(p.meal, "findUnique").mockResolvedValue({
       id: "meal-1",
       userId: TEST_USER_ID,
       mealDate: new Date(),
@@ -211,8 +215,9 @@ describe("PUT /api/v1/meals/:mealId/ingredients/:ingredientId/quantity", () => {
   it("returns 200 and source=MANUAL on valid update", async () => {
     const { createApp } = await import("../../src/app");
     const app = createApp();
+    const { prisma: p } = await import("../../src/lib/prisma");
 
-    vi.spyOn(prisma.meal, "findUnique").mockResolvedValue({
+    vi.spyOn(p.meal, "findUnique").mockResolvedValue({
       id: "meal-1",
       userId: TEST_USER_ID,
       mealDate: new Date(),
@@ -221,7 +226,7 @@ describe("PUT /api/v1/meals/:mealId/ingredients/:ingredientId/quantity", () => {
       updatedAt: new Date(),
     } as never);
 
-    vi.spyOn(prisma.ingredient, "findUnique").mockResolvedValue({
+    vi.spyOn(p.ingredient, "findUnique").mockResolvedValue({
       id: "ing-1",
       mealId: "meal-1",
       name: "arroz",
@@ -236,9 +241,7 @@ describe("PUT /api/v1/meals/:mealId/ingredients/:ingredientId/quantity", () => {
       fatG: 0.3,
     } as never);
 
-    vi.spyOn(prisma.nutritionalReference, "findFirst").mockResolvedValue(null);
-
-    vi.spyOn(prisma.ingredient, "update").mockResolvedValue({
+    vi.spyOn(p.ingredient, "update").mockResolvedValue({
       id: "ing-1",
       mealId: "meal-1",
       name: "arroz",
