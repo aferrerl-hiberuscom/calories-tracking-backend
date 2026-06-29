@@ -10,47 +10,16 @@ import {
   putIngredientQuantity,
 } from "../controllers/estimateQuantities.controller";
 import { calculateCalories } from "../services/calculateCalories.service";
+// Feature 013: confirm and save meal
+import { createMeal } from "../controllers/meals.controller";
+import { auditLog } from "../middleware/auditLog";
 
 export const mealsRouter = Router();
-
-const MealPayloadSchema = z.object({
-  meal_date: z.string().datetime(),
-  ingredients: z
-    .array(
-      z.object({
-        name: z.string().min(1),
-        quantity_g: z.number().positive(),
-        source: z.enum(["visible", "inferred", "manual"]),
-        confidence: z.number().min(0).max(1).optional(),
-        cooking_method: z.string().optional(),
-        // Feature 009: per-ingredient macro values (optional for backward compatibility)
-        calories_kcal: z.number().nonnegative().optional(),
-        protein_g: z.number().nonnegative().optional(),
-        carbs_g: z.number().nonnegative().optional(),
-        fat_g: z.number().nonnegative().optional(),
-      }),
-    )
-    .min(1),
-  nutrition: z.object({
-    calories_kcal: z.number().nonnegative(),
-    protein_g: z.number().nonnegative(),
-    carbs_g: z.number().nonnegative(),
-    fat_g: z.number().nonnegative(),
-    total_weight_g: z.number().nonnegative(),
-  }),
-  image: z.object({
-    storage_key: z.string().min(1),
-    mime_type: z.string().min(1),
-    size_bytes: z.number().int().positive(),
-  }),
-});
 
 const ListMealsQuerySchema = z.object({
   start_date: z.string().datetime().optional(),
   end_date: z.string().datetime().optional(),
 });
-
-const idempotencyMealMap = new Map<string, string>();
 
 function resolveParamId(value: string | string[] | undefined): string {
   if (typeof value === "string") {
@@ -189,84 +158,35 @@ mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
   }
 });
 
-mealsRouter.post("/", requireAuth, rateLimit({ max: 60, windowMs: 60_000 }), async (req, res, next) => {
-  const parsed = MealPayloadSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return next(new ApiError(400, "VALIDATION_ERROR", "Invalid meal payload"));
-  }
+// ─── Feature 013: POST /api/v1/meals — Confirm and save meal ──────────────────
+// Canonical endpoint. Validates payload and persists atomically.
+// Rate limit (60 req/min) is already applied at app.ts for /api/v1/meals.
+// auditLog records user_id, endpoint, status, latency — no body/token content.
+mealsRouter.post("/", requireAuth, auditLog, createMeal);
 
-  const userId = getRequiredUserId(req);
-  const idempotencyKey = req.header("idempotency-key")?.trim();
-  if (idempotencyKey) {
-    const existing = idempotencyMealMap.get(`${userId}:${idempotencyKey}`);
-    if (existing) {
-      return res.status(201).json({ meal_id: existing, status: "created" });
-    }
-  }
-
-  try {
-    const createdMeal = await prisma.$transaction(async (tx) => {
-      const meal = await tx.meal.create({
-        data: {
-          userId,
-          mealDate: new Date(parsed.data.meal_date),
-          status: "confirmed",
-        },
-      });
-
-      await tx.ingredient.createMany({
-        data: parsed.data.ingredients.map((ingredient) => ({
-          mealId: meal.id,
-          name: ingredient.name,
-          quantityG: ingredient.quantity_g,
-          source:
-            ingredient.source.toUpperCase() as import("@prisma/client").IngredientSource,
-          confidence: ingredient.confidence,
-          cookingMethod: ingredient.cooking_method,
-          // Feature 009: persist per-ingredient macros when provided
-          caloriesKcal: ingredient.calories_kcal ?? 0,
-          proteinG: ingredient.protein_g ?? 0,
-          carbsG: ingredient.carbs_g ?? 0,
-          fatG: ingredient.fat_g ?? 0,
-        })),
-      });
-
-      await tx.nutritionalData.create({
-        data: {
-          mealId: meal.id,
-          caloriesKcal: parsed.data.nutrition.calories_kcal,
-          proteinG: parsed.data.nutrition.protein_g,
-          carbsG: parsed.data.nutrition.carbs_g,
-          fatG: parsed.data.nutrition.fat_g,
-          totalWeightG: parsed.data.nutrition.total_weight_g,
-        },
-      });
-
-      await tx.image.create({
-        data: {
-          mealId: meal.id,
-          storageKey: parsed.data.image.storage_key,
-          mimeType: parsed.data.image.mime_type,
-          sizeBytes: parsed.data.image.size_bytes,
-        },
-      });
-
-      return meal;
-    });
-
-    if (idempotencyKey) {
-      idempotencyMealMap.set(`${userId}:${idempotencyKey}`, createdMeal.id);
-    }
-
-    return res.status(201).json({ meal_id: createdMeal.id, status: "created" });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-const UpdateMealPayloadSchema = MealPayloadSchema.pick({
-  ingredients: true,
-  nutrition: true,
+const UpdateMealPayloadSchema = z.object({
+  ingredients: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        quantity_g: z.number().positive(),
+        source: z.enum(["visible", "inferred", "manual"]),
+        confidence: z.number().min(0).max(1).optional(),
+        cooking_method: z.string().optional(),
+        calories_kcal: z.number().nonnegative().optional(),
+        protein_g: z.number().nonnegative().optional(),
+        carbs_g: z.number().nonnegative().optional(),
+        fat_g: z.number().nonnegative().optional(),
+      }),
+    )
+    .min(1),
+  nutrition: z.object({
+    calories_kcal: z.number().nonnegative(),
+    protein_g: z.number().nonnegative(),
+    carbs_g: z.number().nonnegative(),
+    fat_g: z.number().nonnegative(),
+    total_weight_g: z.number().nonnegative(),
+  }),
 });
 
 mealsRouter.put("/:id", requireAuth, async (req, res, next) => {

@@ -25,17 +25,19 @@ model User {
 }
 
 model Meal {
-  id          String           @id @default(uuid())
-  userId      String
-  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  mealDate    DateTime
-  status      String
-  ingredients Ingredient[]
-  nutrition   NutritionalData?
-  image       Image?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id             String           @id @default(uuid())
+  userId         String
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mealDate       DateTime
+  status         String
+  idempotencyKey String?
+  ingredients    Ingredient[]
+  nutrition      NutritionalData?
+  image          Image?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
+  @@unique([userId, idempotencyKey])
   @@index([userId, mealDate])
   @@index([userId])
 }
@@ -86,7 +88,7 @@ model Image {
   meal       Meal     @relation(fields: [mealId], references: [id], onDelete: Cascade)
   storageKey String
   mimeType   String
-  sizeBytes  Int
+  sizeBytes  Int?
   createdAt  DateTime @default(now())
 }
 

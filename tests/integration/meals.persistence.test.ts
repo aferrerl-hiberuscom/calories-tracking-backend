@@ -12,28 +12,26 @@ const USER_A = "user-a-persistence";
 const USER_B = "user-b-persistence";
 
 const validMealPayload = {
+  image_url: "https://storage.example.com/uploads/test-image.jpg",
   meal_date: "2026-06-05T12:00:00.000Z",
+  total_weight_g: 150,
+  calories_kcal: 195,
+  protein_g: 4.1,
+  carbs_g: 43,
+  fat_g: 0.4,
   ingredients: [
     {
       name: "Arroz blanco",
       quantity_g: 150,
-      source: "inferred",
+      source: "INFERRED",
       confidence: 0.9,
       cooking_method: "hervido",
+      calories_kcal: 195,
+      protein_g: 4.1,
+      carbs_g: 43,
+      fat_g: 0.4,
     },
   ],
-  nutrition: {
-    calories_kcal: 195,
-    protein_g: 4.1,
-    carbs_g: 43,
-    fat_g: 0.4,
-    total_weight_g: 150,
-  },
-  image: {
-    storage_key: "uploads/test-image.jpg",
-    mime_type: "image/jpeg",
-    size_bytes: 204800,
-  },
 };
 
 describe("Persistence: POST /api/v1/meals", () => {
@@ -95,11 +93,18 @@ describe("Persistence: POST /api/v1/meals", () => {
 
     expect(response.status).toBe(201);
     expect(response.body.meal_id).toBe(createdMealId);
-    expect(response.body.status).toBe("created");
+    expect(response.body.status).toBe("confirmed");
   });
 
   it("returns same meal_id on repeated request with same idempotency-key", async () => {
     const createdMealId = "mock-idempotent-id-001";
+
+    // First request: findUnique returns null (no existing meal), transaction creates new meal
+    // Second request: findUnique returns the existing meal, transaction is never called
+    const findUniqueSpy = vi
+      .spyOn(prisma.meal, "findUnique")
+      .mockResolvedValueOnce(null) // first call — no existing meal
+      .mockResolvedValueOnce({ id: createdMealId } as never); // second call — meal found
 
     vi.spyOn(prisma, "$transaction").mockImplementation(
       async (fn: (tx: unknown) => Promise<{ id: string }>) => {
@@ -132,6 +137,8 @@ describe("Persistence: POST /api/v1/meals", () => {
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
     expect(second.body.meal_id).toBe(first.body.meal_id);
+    // Transaction was only called once — second request was served from idempotency cache
+    expect(findUniqueSpy).toHaveBeenCalledTimes(2);
   });
 });
 
