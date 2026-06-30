@@ -4,6 +4,7 @@ import { getRequiredUserId, requireAuth } from "../middleware/auth";
 import { prisma } from "../lib/prisma";
 import { ApiError } from "../middleware/api-error";
 import { isValidTimeZone, zonedRange } from "../lib/zoned-range";
+import { computeMacroDistribution } from "../lib/macro-distribution";
 
 export const dashboardRouter = Router();
 
@@ -60,12 +61,20 @@ dashboardRouter.get("/", requireAuth, async (req, res, next) => {
       { calories_kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 },
     );
 
+    // Feature 016: relative proportion of protein/carbs/fat for the period.
+    const macro_distribution = computeMacroDistribution(
+      totals.protein_g,
+      totals.carbs_g,
+      totals.fat_g,
+    );
+
     return res.json({
       period: parsed.data.period,
       calories_kcal: totals.calories_kcal,
       protein_g: totals.protein_g,
       carbs_g: totals.carbs_g,
       fat_g: totals.fat_g,
+      macro_distribution,
       meal_count: meals.length,
     });
   } catch (error) {
