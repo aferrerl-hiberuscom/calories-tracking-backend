@@ -3,8 +3,8 @@
 // Strategy: 1) exact name match (case-insensitive), 2) alias match, 3) category average fallback
 // NOTE: Requires `prisma migrate dev` + `prisma generate` to activate nutritional_reference table queries.
 
-import { prisma } from "../lib/prisma.js";
-import type { NutritionPer100g } from "../types/estimateQuantities.types.js";
+import { prisma } from "../lib/prisma";
+import type { NutritionPer100g } from "../types/estimateQuantities.types";
 
 type NutritionalRow = {
   id: string;

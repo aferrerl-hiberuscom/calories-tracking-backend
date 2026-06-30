@@ -5,13 +5,13 @@ import { ApiError } from "../middleware/api-error";
 import {
   analyzePortions,
   VisionApiError,
-} from "../integrations/openAIVisionClient.js";
+} from "../integrations/openAIVisionClient";
 import {
   lookupNutritionalData,
   calculateMacros,
-} from "./nutritionalData.service.js";
-import * as ingredientRepo from "../repositories/mealIngredient.repository.js";
-import { prisma } from "../lib/prisma.js";
+} from "./nutritionalData.service";
+import * as ingredientRepo from "../repositories/mealIngredient.repository";
+import { prisma } from "../lib/prisma";
 import type {
   IngredientEstimate,
   IngredientInput,

@@ -2,8 +2,8 @@
 // Prisma DAL for meal_ingredients table.
 
 import { IngredientSource } from "@prisma/client";
-import { prisma } from "../lib/prisma.js";
-import type { IngredientEstimate } from "../types/estimateQuantities.types.js";
+import { prisma } from "../lib/prisma";
+import type { IngredientEstimate } from "../types/estimateQuantities.types";
 
 export async function createManyIngredients(
   mealId: string,

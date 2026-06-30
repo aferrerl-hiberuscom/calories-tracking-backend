@@ -7,7 +7,7 @@
 import {
   lookupNutritionalData,
   calculateMacros,
-} from "./nutritionalData.service.js";
+} from "./nutritionalData.service";
 import {
   validateNonNegative,
   flagSuspiciousValues,
@@ -15,14 +15,14 @@ import {
   buildLowConfidenceWarnings,
   consolidateDuplicates,
   detectDiscrepancy,
-} from "./nutritionalValidation.service.js";
+} from "./nutritionalValidation.service";
 import type {
   IngredientWithQuantity,
   CalculatedIngredient,
   CalorieCalculationResult,
   CalorieCalculationTotals,
   CalorieCalculationWarning,
-} from "../types/calorieCalculation.types.js";
+} from "../types/calorieCalculation.types";
 
 // AI nutritional extraction — parses macros from analyze-image response ingredients
 // (The "vision" path reuses macros already computed by the AI in the analyze-image flow)

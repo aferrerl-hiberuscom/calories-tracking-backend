@@ -5,7 +5,7 @@
 import type {
   CalculatedIngredient,
   CalorieCalculationWarning,
-} from "../types/calorieCalculation.types.js";
+} from "../types/calorieCalculation.types";
 
 const MAX_MEAL_CALORIES_KCAL = 5000;
 const MAX_MEAL_PROTEIN_G = 500;
