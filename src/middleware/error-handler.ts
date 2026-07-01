@@ -12,6 +12,8 @@ export function errorHandler(
       ? err
       : new ApiError(500, "INTERNAL_ERROR", "Unexpected error");
 
+  res.locals.errorCode = apiError.code;
+
   return res.status(apiError.status).json({
     timestamp: new Date().toISOString(),
     status: apiError.status,

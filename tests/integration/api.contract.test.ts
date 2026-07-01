@@ -70,6 +70,24 @@ describe("API contract and security", () => {
     expect(lastStatus).toBe(429);
   });
 
+  it("enforces analyze-image rate limit for anonymous requests (ip-keyed, 20/min)", async () => {
+    const { createApp } = await import("../../src/app");
+    const app = createApp();
+
+    let lastStatus = 0;
+    let lastBody: { code?: string } = {};
+    for (let i = 0; i < 21; i += 1) {
+      const response = await request(app)
+        .post("/api/v1/analyze-image")
+        .send({ imageBase64: "", mimeType: "image/jpeg" });
+      lastStatus = response.status;
+      lastBody = response.body;
+    }
+
+    expect(lastStatus).toBe(429);
+    expect(lastBody.code).toBe("RATE_LIMIT_EXCEEDED");
+  });
+
   it("applies ownership scope on meal updates", async () => {
     vi.spyOn(prisma.meal, "findUnique").mockResolvedValue({
       id: "meal-owned-by-other",

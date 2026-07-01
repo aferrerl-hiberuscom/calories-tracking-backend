@@ -1,5 +1,11 @@
 import type { NextFunction, Request, Response } from "express";
 
+// Security constraints (hard rules), carried over from the removed auditLog.ts:
+//   - NEVER log req.body (payload content)
+//   - NEVER log Authorization header or token content
+//   - NEVER log image data or LLM responses
+//   - error_message contains only the error code string, not a stack trace
+
 export function requestLogger(req: Request, res: Response, next: NextFunction) {
   const start = Date.now();
 
@@ -12,7 +18,8 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       method: req.method,
       status: res.statusCode,
       latency_ms: latencyMs,
-      error_message: res.statusCode >= 400 ? "request_failed" : null,
+      error_message:
+        res.statusCode >= 400 ? res.locals.errorCode ?? "request_failed" : null,
     };
 
     // Structured JSON logs without payload content or secrets.

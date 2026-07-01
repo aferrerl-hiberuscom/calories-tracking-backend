@@ -130,6 +130,25 @@ describe("GET /api/v1/dashboard", () => {
     );
   });
 
+  it("returns 429 when rate limit is exceeded for the same user", async () => {
+    // Mock the RateLimiterMemory consume so it rejects on the very first call
+    // (simulates the user already having exhausted 60 req/min).
+    const { RateLimiterMemory } = await import("rate-limiter-flexible");
+    vi.spyOn(RateLimiterMemory.prototype, "consume").mockRejectedValueOnce(
+      // rate-limiter-flexible throws a RateLimiterRes (not an Error) on excess
+      { remainingPoints: 0, msBeforeNext: 30_000 },
+    );
+
+    const { createApp } = await import("../../src/app");
+    const response = await request(createApp())
+      .get("/api/v1/dashboard")
+      .set("Authorization", `Bearer ${buildToken(USER_A)}`)
+      .query({ period: "daily" });
+
+    expect(response.status).toBe(429);
+    expect(response.body.code).toBe("RATE_LIMIT_EXCEEDED");
+  });
+
   it("evaluates the daily range in the user's timezone, not UTC (AC-009)", async () => {
     const spy = vi
       .spyOn(prisma.meal, "findMany")

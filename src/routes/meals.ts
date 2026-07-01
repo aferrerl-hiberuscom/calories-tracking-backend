@@ -12,7 +12,6 @@ import {
 import { calculateCalories } from "../services/calculateCalories.service";
 // Feature 013: confirm and save meal
 import { createMeal } from "../controllers/meals.controller";
-import { auditLog } from "../middleware/auditLog";
 
 export const mealsRouter = Router();
 
@@ -213,8 +212,8 @@ mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
 // ─── Feature 013: POST /api/v1/meals — Confirm and save meal ──────────────────
 // Canonical endpoint. Validates payload and persists atomically.
 // Rate limit (60 req/min) is already applied at app.ts for /api/v1/meals.
-// auditLog records user_id, endpoint, status, latency — no body/token content.
-mealsRouter.post("/", requireAuth, auditLog, createMeal);
+// requestLogger (app-wide) already records user_id, endpoint, status, latency.
+mealsRouter.post("/", requireAuth, createMeal);
 
 const UpdateMealPayloadSchema = z.object({
   ingredients: z
