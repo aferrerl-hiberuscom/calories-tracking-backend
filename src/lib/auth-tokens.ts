@@ -27,10 +27,12 @@ function getJwtSecret(): string {
 
 /**
  * Stateless access token. `sub` carries the user id, matching the existing
- * `requireAuth` middleware that reads `decoded.sub`.
+ * `requireAuth` middleware that reads `decoded.sub`. `email` is included so
+ * endpoints that provision a user record (feature 022) can derive full
+ * identity from the token alone, with no request body.
  */
-export function signAccessToken(userId: string): string {
-  return jwt.sign({ sub: userId }, getJwtSecret(), {
+export function signAccessToken(userId: string, email: string): string {
+  return jwt.sign({ sub: userId, email }, getJwtSecret(), {
     expiresIn: getAccessTtlSeconds(),
   });
 }

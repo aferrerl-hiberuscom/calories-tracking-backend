@@ -4,6 +4,8 @@ import { ApiError } from "./api-error";
 
 type JwtPayload = {
   sub: string;
+  // Optional: older/test tokens may carry only `sub`.
+  email?: string;
 };
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -23,6 +25,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const decoded = jwt.verify(token, secret) as JwtPayload;
     req.userId = decoded.sub;
+    req.userEmail = decoded.email;
     return next();
   } catch {
     return next(new ApiError(401, "UNAUTHORIZED", "Invalid token"));
@@ -38,4 +41,15 @@ export function getRequiredUserId(req: Request): string {
     );
   }
   return req.userId;
+}
+
+export function getRequiredUserEmail(req: Request): string {
+  if (!req.userEmail) {
+    throw new ApiError(
+      401,
+      "UNAUTHORIZED",
+      "Missing authenticated user context",
+    );
+  }
+  return req.userEmail;
 }

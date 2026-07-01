@@ -27,8 +27,8 @@ function invalidCredentials(): ApiError {
   return new ApiError(401, "UNAUTHORIZED", "Invalid email or password");
 }
 
-async function issueTokens(userId: string): Promise<AuthTokens> {
-  const accessToken = signAccessToken(userId);
+async function issueTokens(userId: string, email: string): Promise<AuthTokens> {
+  const accessToken = signAccessToken(userId, email);
   const refresh = generateRefreshToken();
   await prisma.refreshToken.create({
     data: {
@@ -56,13 +56,14 @@ export async function login(
   if (!ok) {
     throw invalidCredentials();
   }
-  return issueTokens(user.id);
+  return issueTokens(user.id, user.email);
 }
 
 export async function refresh(rawRefreshToken: string): Promise<AuthTokens> {
   const tokenHash = hashRefreshToken(rawRefreshToken);
   const existing = await prisma.refreshToken.findUnique({
     where: { tokenHash },
+    include: { user: true },
   });
   if (
     !existing ||
@@ -76,5 +77,5 @@ export async function refresh(rawRefreshToken: string): Promise<AuthTokens> {
     where: { id: existing.id },
     data: { revokedAt: new Date() },
   });
-  return issueTokens(existing.userId);
+  return issueTokens(existing.userId, existing.user.email);
 }
