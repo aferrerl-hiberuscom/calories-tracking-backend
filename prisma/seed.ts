@@ -3,6 +3,7 @@
 // All values are per 100g of the food as typically consumed (cooked where applicable).
 
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
 import "dotenv/config";
 
 console.log("DB URL:", process.env.DATABASE_URL);
@@ -1260,6 +1261,16 @@ async function main(): Promise<void> {
   console.log(
     `Done. Inserted: ${inserted}, Skipped (already exists): ${skipped}`,
   );
+
+  // Feature 001 — demo user so sign-in is exercisable in development.
+  const demoEmail = "demo@calories.app";
+  const demoPasswordHash = await bcrypt.hash("Demo1234!", 12);
+  await prisma.user.upsert({
+    where: { email: demoEmail },
+    update: { passwordHash: demoPasswordHash },
+    create: { email: demoEmail, passwordHash: demoPasswordHash },
+  });
+  console.log(`Seeded demo user: ${demoEmail}`);
 }
 
 main()

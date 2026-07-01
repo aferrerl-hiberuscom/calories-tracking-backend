@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import { analyzeImageRouter } from "./routes/analyze-image";
+import { authRouter } from "./routes/auth";
 import { dashboardRouter } from "./routes/dashboard";
 import { healthRouter } from "./routes/health";
 import { imagesRouter } from "./routes/images";
@@ -20,6 +21,17 @@ export function createApp() {
   app.use(requestLogger);
 
   app.use("/api/v1/health", healthRouter);
+  // Feature 001: authentication (sign-in + refresh). Brute-force protection is
+  // keyed by IP because requests are unauthenticated at this point.
+  app.use(
+    "/api/v1/auth",
+    rateLimit({
+      max: 10,
+      windowMs: 60_000,
+      keyResolver: (req) => `ip:${req.ip ?? "unknown"}`,
+    }),
+    authRouter,
+  );
   app.use(
     "/api/v1/analyze-image",
     rateLimit({

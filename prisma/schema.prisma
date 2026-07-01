@@ -18,10 +18,29 @@ enum IngredientSource {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  meals     Meal[]
-  createdAt DateTime @default(now())
+  id            String         @id @default(uuid())
+  email         String         @unique
+  // Feature 001 — non-recoverable credential hash. Nullable so pre-existing
+  // rows (created before auth) remain valid; users without a hash cannot sign in.
+  passwordHash  String?
+  meals         Meal[]
+  refreshTokens RefreshToken[]
+  createdAt     DateTime       @default(now())
+}
+
+// Feature 001 — opaque refresh tokens stored as a one-way hash to support
+// renewal, rotation and revocation. The raw token is never persisted.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 model Meal {
