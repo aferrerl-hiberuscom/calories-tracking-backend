@@ -25,8 +25,11 @@ const ListMealsQuerySchema = z.object({
 });
 
 // Feature 014: shared mapping for a meal list item (history cards need image + macros).
+// Evolution ui_redesign_brote (014 v2.0.0, A-014-01): expose name + meal_type.
 function mapMealListItem(meal: {
   id: string;
+  name: string;
+  mealType: import("@prisma/client").MealType;
   mealDate: Date;
   status: string;
   createdAt: Date;
@@ -42,6 +45,8 @@ function mapMealListItem(meal: {
 }) {
   return {
     meal_id: meal.id,
+    name: meal.name,
+    meal_type: meal.mealType,
     meal_date: meal.mealDate.toISOString(),
     status: meal.status,
     calories_kcal: meal.nutrition?.caloriesKcal ?? 0,
@@ -175,6 +180,9 @@ mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
 
     return res.json({
       meal_id: meal.id,
+      // Evolution ui_redesign_brote (014 v2.0.0, A-014-02): detail DTO.
+      name: meal.name,
+      meal_type: meal.mealType,
       meal_date: meal.mealDate.toISOString(),
       status: meal.status,
       ingredients: meal.ingredients.map((ing) => ({
@@ -240,6 +248,10 @@ const UpdateMealPayloadSchema = z.object({
   }),
   // Feature 014 (BR-017): the meal date is an editable field.
   meal_date: z.string().datetime().optional(),
+  // Evolution ui_redesign_brote (014 v2.0.0, A-014-03): dish name and meal
+  // type are editable in B3.
+  name: z.string().min(1).max(120).optional(),
+  meal_type: z.enum(["BREAKFAST", "LUNCH", "DINNER", "SNACK"]).optional(),
 });
 
 mealsRouter.put("/:id", requireAuth, async (req, res, next) => {
@@ -286,10 +298,25 @@ mealsRouter.put("/:id", requireAuth, async (req, res, next) => {
 
     await prisma.$transaction(async (tx) => {
       // Feature 014 (BR-017): persist edited meal date when provided.
+      // Evolution ui_redesign_brote (A-014-03): also name and meal type.
+      const mealUpdates: {
+        mealDate?: Date;
+        name?: string;
+        mealType?: import("@prisma/client").MealType;
+      } = {};
       if (parsed.data.meal_date !== undefined) {
+        mealUpdates.mealDate = new Date(parsed.data.meal_date);
+      }
+      if (parsed.data.name !== undefined) {
+        mealUpdates.name = parsed.data.name;
+      }
+      if (parsed.data.meal_type !== undefined) {
+        mealUpdates.mealType = parsed.data.meal_type;
+      }
+      if (Object.keys(mealUpdates).length > 0) {
         await tx.meal.update({
           where: { id: meal.id },
-          data: { mealDate: new Date(parsed.data.meal_date) },
+          data: mealUpdates,
         });
       }
 

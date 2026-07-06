@@ -3,13 +3,18 @@
  * Service: saveMeal — atomic persistence of a confirmed meal.
  */
 
-import type { IngredientSource } from "@prisma/client";
+import type { IngredientSource, MealType } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../middleware/api-error";
+import { inferMealTypeFromIso } from "../../lib/meal-type";
 import type { MealPayload } from "./validateMealPayload";
 
 export interface SaveMealResult {
   mealId: string;
+  name: string;
+  mealType: MealType;
+  mealDate: string;
+  caloriesKcal: number;
 }
 
 /**
@@ -25,15 +30,31 @@ export async function saveMeal(
   payload: MealPayload,
   idempotencyKey?: string
 ): Promise<SaveMealResult> {
+  // Contract 013 v2.0.0 (A-013-02): meal type inferred from the local hour
+  // written in meal_date, persisted at save time.
+  const mealType = inferMealTypeFromIso(payload.meal_date);
+
   try {
     // Idempotency check — return existing meal if key already used by this user
     if (idempotencyKey) {
       const existing = await prisma.meal.findUnique({
         where: { userId_idempotencyKey: { userId, idempotencyKey } },
-        select: { id: true },
+        select: {
+          id: true,
+          name: true,
+          mealType: true,
+          mealDate: true,
+          nutrition: { select: { caloriesKcal: true } },
+        },
       });
       if (existing) {
-        return { mealId: existing.id };
+        return {
+          mealId: existing.id,
+          name: existing.name,
+          mealType: existing.mealType,
+          mealDate: existing.mealDate.toISOString(),
+          caloriesKcal: existing.nutrition?.caloriesKcal ?? 0,
+        };
       }
     }
 
@@ -42,6 +63,8 @@ export async function saveMeal(
       const meal = await tx.meal.create({
         data: {
           userId,
+          name: payload.name,
+          mealType,
           mealDate: new Date(payload.meal_date),
           status: "confirmed",
           idempotencyKey: idempotencyKey ?? null,
@@ -76,20 +99,29 @@ export async function saveMeal(
         },
       });
 
-      // 4. Insert Image record using image_url as storageKey
-      await tx.image.create({
-        data: {
-          mealId: meal.id,
-          storageKey: payload.image_url,
-          mimeType: "image/jpeg", // default; contract only provides a URL reference
-          sizeBytes: null, // populated when real image metadata is available
-        },
-      });
+      // 4. Insert Image record using image_url as storageKey.
+      // Contract 013 v2.1.0 (A-013-05): manual creation has no photo — skip.
+      if (payload.image_url !== undefined) {
+        await tx.image.create({
+          data: {
+            mealId: meal.id,
+            storageKey: payload.image_url,
+            mimeType: "image/jpeg", // default; contract only provides a URL reference
+            sizeBytes: null, // populated when real image metadata is available
+          },
+        });
+      }
 
       return meal;
     });
 
-    return { mealId: result.id };
+    return {
+      mealId: result.id,
+      name: payload.name,
+      mealType,
+      mealDate: new Date(payload.meal_date).toISOString(),
+      caloriesKcal: payload.calories_kcal,
+    };
   } catch (error) {
     if (error instanceof ApiError) {
       throw error;

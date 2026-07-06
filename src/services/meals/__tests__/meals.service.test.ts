@@ -50,6 +50,8 @@ const MEAL_ID = "meal-uuid-abc-123";
 
 const validPayload = {
   image_url: "uploads/test-meal.jpg",
+  // Evolution ui_redesign_brote (013 v2.0.0): dish name is required.
+  name: "Arroz blanco con verduras",
   meal_date: "2026-06-05T12:00:00.000Z",
   total_weight_g: 150,
   calories_kcal: 195,
@@ -102,7 +104,14 @@ describe("saveMeal — success path", () => {
 
     const result = await saveMeal(USER_ID, validPayload);
 
-    expect(result).toEqual({ mealId: MEAL_ID });
+    // 013 v2.0.0 (A-013-03): the service returns the A7 meal-card data too.
+    expect(result).toEqual({
+      mealId: MEAL_ID,
+      name: validPayload.name,
+      mealType: "LUNCH",
+      mealDate: validPayload.meal_date,
+      caloriesKcal: validPayload.calories_kcal,
+    });
   });
 
   it("calls prisma.$transaction once", async () => {

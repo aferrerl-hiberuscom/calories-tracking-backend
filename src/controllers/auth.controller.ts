@@ -8,6 +8,13 @@ const LoginSchema = z.object({
   password: z.string().min(1),
 });
 
+// Contract 001 v2.0.0: email unique, password >= 8 chars, optional name.
+const RegisterSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  name: z.string().min(1).max(120).optional(),
+});
+
 const RefreshSchema = z.object({
   refresh_token: z.string().min(1),
 });
@@ -38,6 +45,37 @@ export async function postLogin(
       parsed.data.password,
     );
     return res.status(200).json(toEnvelope(tokens));
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * POST /api/v1/auth/register — contract 001 v2.0.0 (A-001 registration).
+ * 201 with the same token envelope as login (auto-login).
+ */
+export async function postRegister(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const parsed = RegisterSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return next(
+      new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "Invalid registration payload (email required; password >= 8 chars; name 1..120 optional)",
+      ),
+    );
+  }
+  try {
+    const tokens = await authService.register(
+      parsed.data.email,
+      parsed.data.password,
+      parsed.data.name,
+    );
+    return res.status(201).json(toEnvelope(tokens));
   } catch (err) {
     return next(err);
   }

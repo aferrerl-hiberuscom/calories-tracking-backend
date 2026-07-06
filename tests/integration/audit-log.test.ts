@@ -57,6 +57,7 @@ describe("Audit log emission (request-logger.ts)", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({
         image_url: "https://storage.example.com/uploads/audit-image.jpg",
+        name: "Comida de auditoría",
         meal_date: "2026-06-05T12:00:00.000Z",
         total_weight_g: 150,
         calories_kcal: 195,

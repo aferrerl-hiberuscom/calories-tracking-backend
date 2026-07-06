@@ -33,6 +33,8 @@ function makePayload(overrides: Record<string, unknown> = {}, ingredientOverride
   const ingredient = makeIngredient(ingredientOverrides);
   const base = {
     image_url: "uploads/test-image.jpg",
+    // Evolution ui_redesign_brote (013 v2.0.0): dish name is required.
+    name: "Plato de prueba",
     meal_date: "2026-06-05T12:00:00.000Z",
     total_weight_g: ingredient.quantity_g as number,
     calories_kcal: ingredient.calories_kcal as number,

@@ -30,6 +30,8 @@ const MOCK_MEAL_ID = "meal-013-abc-uuid";
 /** Minimal valid payload that passes validateMealPayload */
 const validPayload = {
   image_url: "uploads/test-013.jpg",
+  // Evolution ui_redesign_brote (013 v2.0.0): dish name is required.
+  name: "Arroz blanco",
   meal_date: "2026-06-05T12:00:00.000Z",
   total_weight_g: 150,
   calories_kcal: 195,

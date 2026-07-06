@@ -28,7 +28,11 @@ export interface IngredientPayload {
 }
 
 export interface MealPayload {
-  image_url: string;
+  // Contract 013 v2.1.0 (A-013-05): optional — manual creation (C3 → empty A6,
+  // D-BROTE-03) saves without a photo. When present it must be non-empty.
+  image_url?: string;
+  // Contract 013 v2.0.0 (A-013-01): dish name, required, 1..120 chars.
+  name: string;
   meal_date: string;
   total_weight_g: number;
   calories_kcal: number;
@@ -60,9 +64,19 @@ export function validateMealPayload(payload: unknown): ValidationResult {
 
   const p = payload as Record<string, unknown>;
 
-  // image_url
-  if (!isString(p.image_url) || p.image_url.trim().length === 0) {
-    errors.push("image_url is required and must be a non-empty string");
+  // image_url — optional since contract 013 v2.1.0 (manual creation has no
+  // photo); when present it must still be a non-empty reference.
+  if (p.image_url !== undefined) {
+    if (!isString(p.image_url) || p.image_url.trim().length === 0) {
+      errors.push("image_url, when present, must be a non-empty string");
+    }
+  }
+
+  // name — contract 013 v2.0.0 (A-013-01): required, 1..120 chars
+  if (!isString(p.name) || p.name.trim().length === 0) {
+    errors.push("name is required and must be a non-empty string");
+  } else if (p.name.length > 120) {
+    errors.push("name must not exceed 120 characters");
   }
 
   // meal_date

@@ -8,7 +8,7 @@
 
 import { prisma } from "../lib/prisma";
 import { ApiError } from "../middleware/api-error";
-import { verifyPassword } from "../lib/password";
+import { hashPassword, verifyPassword } from "../lib/password";
 import {
   generateRefreshToken,
   getAccessTtlSeconds,
@@ -42,6 +42,37 @@ async function issueTokens(userId: string, email: string): Promise<AuthTokens> {
     refreshToken: refresh.token,
     expiresIn: getAccessTtlSeconds(),
   };
+}
+
+/**
+ * Evolution ui_redesign_brote — contract 001 v2.0.0 (registration in scope,
+ * D-BROTE-04). Creates the account (provisioning per 022 v1.3) and issues
+ * tokens immediately (auto-login). Duplicate email -> 409 CONFLICT.
+ */
+export async function register(
+  email: string,
+  password: string,
+  name?: string,
+): Promise<AuthTokens> {
+  const passwordHash = await hashPassword(password);
+  try {
+    const user = await prisma.user.create({
+      data: { email, passwordHash, name: name ?? null },
+      select: { id: true, email: true },
+    });
+    return issueTokens(user.id, user.email);
+  } catch (error) {
+    // Prisma unique-constraint violation on email (BR-028 pattern from 022).
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: string }).code === "P2002"
+    ) {
+      throw new ApiError(409, "CONFLICT", "Email already registered");
+    }
+    throw error;
+  }
 }
 
 export async function login(

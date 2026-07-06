@@ -13,6 +13,8 @@ const USER_B = "user-b-persistence";
 
 const validMealPayload = {
   image_url: "https://storage.example.com/uploads/test-image.jpg",
+  // Evolution ui_redesign_brote (013 v2.0.0): dish name is required.
+  name: "Comida de prueba",
   meal_date: "2026-06-05T12:00:00.000Z",
   total_weight_g: 150,
   calories_kcal: 195,
@@ -104,7 +106,14 @@ describe("Persistence: POST /api/v1/meals", () => {
     const findUniqueSpy = vi
       .spyOn(prisma.meal, "findUnique")
       .mockResolvedValueOnce(null) // first call — no existing meal
-      .mockResolvedValueOnce({ id: createdMealId } as never); // second call — meal found
+      .mockResolvedValueOnce({
+        // 013 v2.0.0: the idempotency select now returns A7 card data too.
+        id: createdMealId,
+        name: "Comida de prueba",
+        mealType: "LUNCH",
+        mealDate: new Date("2026-06-05T12:00:00.000Z"),
+        nutrition: { caloriesKcal: 195 },
+      } as never); // second call — meal found
 
     vi.spyOn(prisma, "$transaction").mockImplementation(
       async (fn: (tx: unknown) => Promise<{ id: string }>) => {

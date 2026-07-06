@@ -46,9 +46,15 @@ export async function createMeal(
 
     const result = await saveMeal(userId, req.body as MealPayload, key);
 
+    // Contract 013 v2.0.0 (A-013-03): the 201 body carries the A7 meal-card
+    // data so the success screen renders without a refetch.
     res.status(201).json({
       meal_id: result.mealId,
       status: "confirmed",
+      name: result.name,
+      meal_type: result.mealType,
+      meal_date: result.mealDate,
+      calories_kcal: result.caloriesKcal,
     });
   } catch (error) {
     next(error);

@@ -8,6 +8,8 @@ import { ApiError } from "../middleware/api-error";
 export type UserProfile = {
   id: string;
   email: string;
+  // Evolution ui_redesign_brote (022 v1.3): editable display name.
+  name: string | null;
   createdAt: Date;
 };
 
@@ -17,7 +19,12 @@ export type EnsureUserResult = {
 };
 
 // Never selects passwordHash (BR-030): credential material must never leak.
-const PROFILE_SELECT = { id: true, email: true, createdAt: true } as const;
+const PROFILE_SELECT = {
+  id: true,
+  email: true,
+  name: true,
+  createdAt: true,
+} as const;
 
 /**
  * Idempotent provisioning (BR-029): returns the existing record if the
@@ -68,4 +75,26 @@ export async function getCurrentUser(id: string): Promise<UserProfile> {
     throw new ApiError(404, "NOT_FOUND", "User not provisioned");
   }
   return user;
+}
+
+/**
+ * Evolution ui_redesign_brote (022 v1.3, 025 v1.0.0): update the display
+ * name shown in the «Hola, {nombre}» header and Perfil (D1).
+ */
+export async function updateCurrentUser(
+  id: string,
+  data: { name: string },
+): Promise<UserProfile> {
+  const existing = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  if (!existing) {
+    throw new ApiError(404, "NOT_FOUND", "User not provisioned");
+  }
+  return prisma.user.update({
+    where: { id },
+    data: { name: data.name },
+    select: PROFILE_SELECT,
+  });
 }

@@ -17,15 +17,44 @@ enum IngredientSource {
   MISSING
 }
 
+// Evolution ui_redesign_brote (contracts 013/014 v2.x) — meal type inferred
+// from the local hour of meal_date at save time; editable afterwards in B3.
+enum MealType {
+  BREAKFAST
+  LUNCH
+  DINNER
+  SNACK
+}
+
 model User {
   id            String         @id @default(uuid())
   email         String         @unique
   // Feature 001 — non-recoverable credential hash. Nullable so pre-existing
   // rows (created before auth) remain valid; users without a hash cannot sign in.
   passwordHash  String?
+  // Evolution ui_redesign_brote (022 v1.3) — display name for the «Hola, {nombre}»
+  // header; nullable, frontend falls back to the email local part.
+  name          String?        @db.VarChar(120)
   meals         Meal[]
   refreshTokens RefreshToken[]
+  nutritionGoal NutritionGoal?
   createdAt     DateTime       @default(now())
+}
+
+// Feature 025 — daily nutrition goals (one row per user; defaults are NOT
+// persisted, they are served with is_default=true until the first edit).
+model NutritionGoal {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  caloriesKcalTarget Int
+  proteinGTarget     Int
+  carbsGTarget       Int
+  fatGTarget         Int
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("nutrition_goals")
 }
 
 // Feature 001 — opaque refresh tokens stored as a one-way hash to support
@@ -47,6 +76,10 @@ model Meal {
   id             String           @id @default(uuid())
   userId         String
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Evolution ui_redesign_brote (013/014 v2.x) — dish name (backfilled with
+  // "Comida") and meal type (backfilled by hour bands from mealDate).
+  name           String           @db.VarChar(120)
+  mealType       MealType
   mealDate       DateTime
   status         String
   idempotencyKey String?
