@@ -23,7 +23,10 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB hard limit
  */
 const AnalyzeImageSchema = z.object({
   image_url: z.string().url({ message: "image_url must be a valid URL" }),
-  user_id: z.string().uuid({ message: "user_id must be a valid UUID" }),
+  // User ids are opaque strings (Prisma `String @default(uuid())`), and dev/seed
+  // users may not be UUIDs. Ownership is enforced below via user_id ===
+  // authenticated user, so we only require a non-empty id here.
+  user_id: z.string().min(1, { message: "user_id is required" }),
   meal_date: z.string().datetime().optional(),
 });
 

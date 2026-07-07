@@ -1,5 +1,11 @@
 import { createHash } from "crypto";
 import { ApiError } from "../middleware/api-error";
+import {
+  PermanentProviderError,
+  TransientProviderError,
+  type VisionProvider,
+} from "../integrations/providerErrors";
+import { analyzeDishWithGemini } from "../integrations/geminiVisionClient";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +39,7 @@ export type AnalyzeTotals = {
 };
 
 export type AnalyzeMetadata = {
-  provider: "openai" | "google";
+  provider: VisionProvider;
   model: string;
   latency_ms: number;
   timestamp: string;
@@ -66,7 +72,7 @@ export type DishDescription = {
 };
 
 export type Provenance = {
-  source: "openai_vision" | "google_vision";
+  source: "gemini_vision" | "openai_vision" | "google_vision";
   model: string;
   processed_at: string; // ISO 8601
 };
@@ -98,7 +104,9 @@ type RawProviderIngredient = {
   fat_g?: number;
 };
 
-type RawProviderResponse = {
+export type RawProviderResponse = {
+  is_food?: boolean;
+  rejection_reason?: string;
   description?: string;
   dish_description?: string;
   dish_name?: string;
@@ -114,28 +122,8 @@ type RawProviderResponse = {
   model?: string;
 };
 
-// ─── Error classes ─────────────────────────────────────────────────────────────
-
-class PermanentProviderError extends Error {
-  constructor(
-    public readonly provider: "openai" | "google",
-    public readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = "PermanentProviderError";
-  }
-}
-
-class TransientProviderError extends Error {
-  constructor(
-    public readonly provider: "openai" | "google",
-    message: string,
-  ) {
-    super(message);
-    this.name = "TransientProviderError";
-  }
-}
+// Error classes (PermanentProviderError / TransientProviderError) live in
+// ../integrations/providerErrors so provider clients can share them.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -473,6 +461,70 @@ export async function analyzeImageWithFallback(
 ): Promise<AnalyzeOutput> {
   const inputHash = computeInputHash(input.imageBase64);
 
+  // Primary provider: Google Gemini (AI Studio, free tier).
+  // Gated on GEMINI_API_KEY so the existing OpenAI/Google tests (which never set
+  // it) keep exercising the OpenAI → Google → mock chain below unchanged.
+  if (process.env.GEMINI_API_KEY) {
+    let geminiResult: Awaited<ReturnType<typeof analyzeDishWithGemini>> | null =
+      null;
+    try {
+      geminiResult = await analyzeDishWithGemini(input);
+    } catch (geminiErr) {
+      const isPermanent = geminiErr instanceof PermanentProviderError;
+      structuredLog({
+        level: "warn",
+        provider: "gemini",
+        userId: input.userId,
+        input_hash: inputHash,
+        error:
+          geminiErr instanceof Error ? geminiErr.message : String(geminiErr),
+        action: isPermanent
+          ? "no_fallback_permanent_error"
+          : "gemini_failed_trying_fallback",
+      });
+
+      if (isPermanent) {
+        throw new ApiError(
+          400,
+          "IA_INVALID_REQUEST",
+          "AI provider rejected the image",
+        );
+      }
+      // Transient — fall through to the OpenAI → Google → mock chain below.
+    }
+
+    if (geminiResult) {
+      // Reject non-food images explicitly — never register a meal for them, and
+      // never fall back to the mock (which would fabricate food). This is thrown
+      // OUTSIDE the try above so it is not swallowed as a provider failure.
+      if (geminiResult.raw.is_food === false) {
+        structuredLog({
+          level: "info",
+          provider: "gemini",
+          userId: input.userId,
+          input_hash: inputHash,
+          status: "rejected_not_food",
+        });
+        throw new ApiError(
+          422,
+          "NOT_FOOD",
+          geminiResult.raw.rejection_reason?.trim() ||
+            "La imagen no parece contener comida.",
+        );
+      }
+
+      return buildAnalyzeOutput({
+        raw: geminiResult.raw,
+        providerName: "gemini",
+        modelName: geminiResult.model,
+        latency_ms: geminiResult.latency_ms,
+        usedFallback: false,
+        inputHash,
+        userId: input.userId,
+      });
+    }
+  }
+
   let raw: RawProviderResponse;
   let providerName: "openai" | "google";
   let modelName: string;
@@ -549,6 +601,38 @@ export async function analyzeImageWithFallback(
     }
   }
 
+  return buildAnalyzeOutput({
+    raw,
+    providerName,
+    modelName,
+    latency_ms,
+    usedFallback,
+    inputHash,
+    userId: input.userId,
+  });
+}
+
+// ─── Output builder (shared by all providers) ───────────────────────────────────
+
+function buildAnalyzeOutput(params: {
+  raw: RawProviderResponse;
+  providerName: VisionProvider;
+  modelName: string;
+  latency_ms: number;
+  usedFallback: boolean;
+  inputHash: string;
+  userId?: string;
+}): AnalyzeOutput {
+  const {
+    raw,
+    providerName,
+    modelName,
+    latency_ms,
+    usedFallback,
+    inputHash,
+    userId,
+  } = params;
+
   // Normalize response
   const cookingMethod = normalizeCookingMethod(raw.cooking_method_raw);
   const rawIngredients = normalizeIngredients(
@@ -592,8 +676,15 @@ export async function analyzeImageWithFallback(
     cooking_method: cookingMethod,
   };
 
+  const provenanceSource: Provenance["source"] =
+    providerName === "gemini"
+      ? "gemini_vision"
+      : providerName === "openai"
+        ? "openai_vision"
+        : "google_vision";
+
   const provenance: Provenance = {
-    source: providerName === "openai" ? "openai_vision" : "google_vision",
+    source: provenanceSource,
     model: modelName,
     processed_at: metadata.timestamp,
   };
@@ -606,7 +697,7 @@ export async function analyzeImageWithFallback(
     level: "info",
     provider: providerName,
     model: modelName,
-    userId: input.userId,
+    userId,
     input_hash: inputHash,
     latency_ms,
     status: "success",

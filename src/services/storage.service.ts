@@ -6,12 +6,24 @@
 
 import { randomUUID } from "crypto";
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
+/**
+ * Normalize a Supabase project URL to its origin (scheme + host), dropping any
+ * path suffix (e.g. "/rest/v1") or trailing slash. Storage, REST and Auth all
+ * live under the same origin at /storage/v1, /rest/v1, /auth/v1 — so a stray
+ * path would misroute /storage/v1 requests to PostgREST (PGRST125 errors).
+ */
+function normalizeOrigin(raw: string): string {
+  if (!raw) return "";
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+}
+
+const SUPABASE_URL = normalizeOrigin(process.env.SUPABASE_URL ?? "");
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY ?? "";
 const STORAGE_BUCKET = process.env.STORAGE_BUCKET ?? "meal-images";
-
-/** Signed upload URL expiration window in seconds (5 minutes per contract) */
-const UPLOAD_URL_EXPIRES_IN = 300;
 
 /** Signed view URL expiration window in seconds (1 hour for display) */
 const VIEW_URL_EXPIRES_IN = 3600;
@@ -61,12 +73,14 @@ export async function getSignedUploadUrl(
   }
 
   const storageKey = `${userId}/${randomUUID()}.${ext}`;
-  const url = `${SUPABASE_URL}/storage/v1/object/sign/upload/${STORAGE_BUCKET}/${storageKey}`;
+  // Supabase Storage "create signed upload URL": the path segments are
+  // upload/sign (NOT sign/upload), and the body is an empty JSON object.
+  const url = `${SUPABASE_URL}/storage/v1/object/upload/sign/${STORAGE_BUCKET}/${storageKey}`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: supabaseStorageHeaders(),
-    body: JSON.stringify({ expiresIn: UPLOAD_URL_EXPIRES_IN }),
+    body: JSON.stringify({}),
   });
 
   if (!response.ok) {
@@ -76,20 +90,18 @@ export async function getSignedUploadUrl(
     );
   }
 
-  const data = (await response.json()) as {
-    signedURL?: string;
-    token?: string;
-  };
-
-  if (!data.signedURL) {
-    throw new Error("Storage service returned no signedURL");
+  // Response shape: { url: "/object/upload/sign/{bucket}/{path}?token=<jwt>" }
+  const data = (await response.json()) as { url?: string };
+  if (!data.url) {
+    throw new Error("Storage service returned no upload url");
   }
 
-  const uploadUrl = data.signedURL.startsWith("http")
-    ? data.signedURL
-    : `${SUPABASE_URL}${data.signedURL}`;
+  const uploadUrl = data.url.startsWith("http")
+    ? data.url
+    : `${SUPABASE_URL}/storage/v1${data.url}`;
+  const token = new URL(uploadUrl).searchParams.get("token") ?? "";
 
-  return { storageKey, uploadUrl, token: data.token ?? "" };
+  return { storageKey, uploadUrl, token };
 }
 
 /**
@@ -126,7 +138,7 @@ export async function getSignedViewUrl(storageKey: string): Promise<string> {
 
   return data.signedURL.startsWith("http")
     ? data.signedURL
-    : `${SUPABASE_URL}${data.signedURL}`;
+    : `${SUPABASE_URL}/storage/v1${data.signedURL}`;
 }
 
 /**

@@ -48,11 +48,21 @@ export async function verifyImageOwnership(
     include: { meal: { select: { userId: true } } },
   });
 
-  if (!image) {
-    throw new ApiError(404, "IMAGE_NOT_FOUND", "Image not found");
+  if (image) {
+    if (image.meal.userId !== userId) {
+      throw new ApiError(
+        403,
+        "FORBIDDEN_OWNERSHIP",
+        "You do not have access to this image",
+      );
+    }
+    return;
   }
 
-  if (image.meal.userId !== userId) {
+  // The Image row is only persisted when the meal is saved, which happens AFTER
+  // the first analysis. Before that, verify ownership via the user-scoped storage
+  // key (`${userId}/<uuid>.<ext>`) instead of failing with 404.
+  if (!storageKey.startsWith(`${userId}/`)) {
     throw new ApiError(
       403,
       "FORBIDDEN_OWNERSHIP",
