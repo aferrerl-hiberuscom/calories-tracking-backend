@@ -15,6 +15,17 @@ enum IngredientSource {
   ESTIMATED_GENERIC
   CONSOLIDATED
   MISSING
+  // Feature 026 (contract 013 v2.2.0, A-013-06) — ingredient whose macros come
+  // from a Product resolved by barcode; validated like MANUAL (defined values).
+  PRODUCT
+}
+
+// Feature 026 — origin of a Product's nutritional data (D-BAR-07): OFF is the
+// only source that can be born verified; user contributions start unverified.
+enum ProductSource {
+  OFF
+  USER_LABEL
+  MANUAL
 }
 
 // Evolution ui_redesign_brote (contracts 013/014 v2.x) — meal type inferred
@@ -142,6 +153,30 @@ model Image {
   mimeType   String
   sizeBytes  Int?
   createdAt  DateTime @default(now())
+}
+
+// Feature 026 — packaged products resolved by barcode (evolution
+// escaneo_codigo_barras). Global entities (not per-user) keyed by the
+// normalized barcode (D-BAR-10: EAN-13/EAN-8, UPC-A left-padded with 0).
+// createdByUserId is internal traceability only — never exposed via the API.
+model Product {
+  id               String        @id @default(uuid())
+  barcode          String        @unique
+  name             String        @db.VarChar(120)
+  brand            String?       @db.VarChar(120)
+  caloriesKcal100g Float
+  proteinG100g     Float
+  carbsG100g       Float
+  fatG100g         Float
+  servingSizeG     Float?
+  servingLabel     String?       @db.VarChar(60)
+  source           ProductSource
+  verified         Boolean       @default(false)
+  createdByUserId  String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@map("products")
 }
 
 model NutritionalReference {

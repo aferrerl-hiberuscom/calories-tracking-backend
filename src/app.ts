@@ -8,6 +8,7 @@ import { healthRouter } from "./routes/health";
 import { imagesRouter } from "./routes/images";
 import { mealsRouter } from "./routes/meals";
 import { nutritionRouter, ingredientsRouter } from "./routes/nutrition";
+import { productsRouter } from "./routes/products";
 import { usersRouter } from "./routes/users";
 import { errorHandler } from "./middleware/error-handler";
 import { rateLimit } from "./middleware/rate-limit";
@@ -75,6 +76,13 @@ export function createApp() {
     "/api/v1/ingredients",
     rateLimit({ max: 60, windowMs: 60_000 }),
     ingredientsRouter,
+  );
+  // Feature 026: product resolution by barcode (label-extraction has its own
+  // stricter AI bucket inside the router).
+  app.use(
+    "/api/v1/products",
+    rateLimit({ max: 60, windowMs: 60_000 }),
+    productsRouter,
   );
 
   app.use(errorHandler);

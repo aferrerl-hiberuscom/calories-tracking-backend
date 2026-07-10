@@ -11,6 +11,8 @@ const VALID_SOURCES = [
   "ESTIMATED_GENERIC",
   "CONSOLIDATED",
   "MISSING",
+  // Contract 013 v2.2.0 (A-013-06): macros defined by a barcode-resolved Product.
+  "PRODUCT",
 ] as const;
 
 export type ValidSource = (typeof VALID_SOURCES)[number];
