@@ -33,41 +33,71 @@ const SYSTEM_PROMPT =
   "estimated weights and macronutrients. If it does NOT, say so and do not invent " +
   "any food. Respond with ONLY a JSON object — no markdown fences, no extra text.";
 
-const USER_PROMPT = [
-  "Analyze this image and return a JSON object with exactly these fields:",
-  "{",
-  '  "is_food": boolean,                // true ONLY if the image clearly shows food or drink',
-  '  "rejection_reason": string,        // if is_food is false, briefly say (in Spanish) what the image shows instead; otherwise ""',
-  '  "dish_name": string,',
-  '  "dish_description": string,        // short natural-language description',
-  '  "cuisine_type": string,            // e.g. "Italian", "Mexican", "Unknown"',
-  '  "cooking_method_raw": string,      // FRIED|BAKED|GRILLED|BOILED|RAW|MIXED|UNKNOWN',
-  '  "confidence": number,              // 0..1 overall confidence',
-  '  "total_weight_g": number,          // estimated total edible weight (g)',
-  '  "ingredients": [',
-  "    {",
-  '      "name": string,',
-  '      "quantity_g": number,          // 1..5000',
-  '      "confidence": number,          // 0..1',
-  '      "cooking_method": string,      // FRIED|BAKED|GRILLED|BOILED|RAW|MIXED|UNKNOWN',
-  '      "calories_kcal": number,',
-  '      "protein_g": number,',
-  '      "carbs_g": number,',
-  '      "fat_g": number',
-  "    }",
-  "  ]",
-  "}",
-  "",
-  "Rules:",
-  "- If the image does NOT clearly contain food or drink (e.g. a table, a person,",
-  "  a landscape, an object, a screenshot), set is_food=false, ingredients=[], and",
-  "  explain briefly in rejection_reason. Never invent food that is not visible.",
-  "- Only when is_food=true, fill the dish fields and per-ingredient macros for",
-  "  each ingredient's quantity_g.",
-  "- quantity_g must be between 1 and 5000.",
-  "- confidence: 1.0 = certain, 0.0 = guessing.",
-  "- Return ONLY the JSON object, no markdown fences, no prose.",
-].join("\n");
+function buildUserPrompt(catalogNames: string[]): string {
+  const lines = [
+    "Analyze this image and return a JSON object with exactly these fields:",
+    "{",
+    '  "is_food": boolean,                // true ONLY if the image clearly shows food or drink',
+    '  "rejection_reason": string,        // if is_food is false, briefly say (in Spanish) what the image shows instead; otherwise ""',
+    '  "dish_name": string,               // in Spanish',
+    '  "dish_description": string,        // short natural-language description, in Spanish',
+    '  "cuisine_type": string,            // e.g. "Italian", "Mexican", "Unknown"',
+    '  "cooking_method_raw": string,      // FRIED|BAKED|GRILLED|BOILED|RAW|MIXED|UNKNOWN',
+    '  "confidence": number,              // 0..1 overall confidence',
+    '  "total_weight_g": number,          // estimated total edible weight (g)',
+    '  "ingredients": [',
+    "    {",
+    '      "name": string,                // in Spanish, lowercase, common culinary term',
+    ...(catalogNames.length > 0
+      ? [
+          '      "catalog_name": string|null,   // EXACT entry copied from CATALOG below, or null',
+        ]
+      : []),
+    '      "quantity_g": number,          // 1..5000',
+    '      "confidence": number,          // 0..1',
+    '      "cooking_method": string,      // FRIED|BAKED|GRILLED|BOILED|RAW|MIXED|UNKNOWN',
+    '      "calories_kcal": number,',
+    '      "protein_g": number,',
+    '      "carbs_g": number,',
+    '      "fat_g": number',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    "Rules:",
+    "- If the image does NOT clearly contain food or drink (e.g. a table, a person,",
+    "  a landscape, an object, a screenshot), set is_food=false, ingredients=[], and",
+    "  explain briefly in rejection_reason. Never invent food that is not visible.",
+    "- Only when is_food=true, fill the dish fields and per-ingredient macros for",
+    "  each ingredient's quantity_g.",
+    '- Ingredient names MUST be in Spanish (es-ES), lowercase, common culinary terms',
+    '  (e.g. "arroz blanco cocido", "pechuga de pollo a la plancha", "pipas de girasol").',
+    "- Estimate quantity_g from VISUAL evidence, not generic servings: use size",
+    "  references visible in the photo (a standard dinner plate is ~26 cm across, a",
+    "  fork ~20 cm, a spoon ~15 cm, a credit card ~8.5 cm, an adult hand ~18 cm),",
+    "  judge the apparent volume and how full the plate/bowl/package is, and apply",
+    "  the typical density of each food (e.g. leafy salad is light, rice/pasta is",
+    "  medium, meat/cheese is dense). Use typical serving sizes only as a final",
+    "  sanity check on your visual estimate.",
+    "- quantity_g must be between 1 and 5000.",
+    "- confidence: 1.0 = certain, 0.0 = guessing.",
+    "- Return ONLY the JSON object, no markdown fences, no prose.",
+  ];
+
+  if (catalogNames.length > 0) {
+    lines.push(
+      "",
+      "CATALOG — for each ingredient, if one of these entries is the SAME food",
+      "(synonyms, regional names and translations count, e.g. an ingredient you",
+      'would name "hamburguesa de vaca" matches the entry "Hamburguesa de ternera"),',
+      "set catalog_name to that entry COPIED EXACTLY as written below. If none",
+      "clearly matches the same food, set catalog_name to null. Never force a match.",
+      catalogNames.join(" | "),
+    );
+  }
+
+  return lines.join("\n");
+}
 
 async function fetchWithTimeout(
   url: string,
@@ -123,6 +153,7 @@ function mapToRawResponse(
       const item = (entry ?? {}) as Record<string, unknown>;
       return {
         name: toString(item.name),
+        catalog_name: toString(item.catalog_name),
         quantity_g: toNumber(item.quantity_g),
         confidence: toNumber(item.confidence),
         cooking_method: toString(item.cooking_method),
@@ -143,6 +174,11 @@ function mapToRawResponse(
  */
 export async function analyzeDishWithGemini(
   input: GeminiInput,
+  options: {
+    /** Catalog entries for canonical mapping (semantic match against the
+     * nutritional_reference table). Empty/omitted → no catalog section. */
+    catalogNames?: string[];
+  } = {},
 ): Promise<{ raw: RawProviderResponse; model: string; latency_ms: number }> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -161,7 +197,10 @@ export async function analyzeDishWithGemini(
 
   const body = JSON.stringify({
     model,
-    max_tokens: 2048,
+    max_tokens: 4096,
+    // Disable Gemini 2.5 "thinking": it adds ~7s latency and eats the token
+    // budget (truncated → invalid JSON) without helping food classification.
+    extra_body: { google: { thinking_config: { thinking_budget: 0 } } },
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -169,7 +208,7 @@ export async function analyzeDishWithGemini(
         role: "user",
         content: [
           { type: "image_url", image_url: { url: dataUri } },
-          { type: "text", text: USER_PROMPT },
+          { type: "text", text: buildUserPrompt(options.catalogNames ?? []) },
         ],
       },
     ],

@@ -6,6 +6,12 @@ import {
   type VisionProvider,
 } from "../integrations/providerErrors";
 import { analyzeDishWithGemini } from "../integrations/geminiVisionClient";
+import {
+  calculateMacros,
+  getNutritionalCatalogNames,
+  lookupNutritionalDataDetailed,
+  type DetailedNutritionLookup,
+} from "./nutritionalData.service";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,6 +101,8 @@ export type AnalyzeOutput = {
 // Raw shape returned by AI providers (before normalization)
 type RawProviderIngredient = {
   name?: string;
+  /** Canonical nutritional_reference entry chosen by the LLM (semantic match), if any. */
+  catalog_name?: string;
   quantity_g?: number;
   confidence?: number;
   cooking_method?: string;
@@ -148,6 +156,11 @@ function canUseMockFallback(): boolean {
     return configured.toLowerCase() === "true";
   }
   return !isProductionEnvironment();
+}
+
+/** Hybrid DB macros: opt-in via MACROS_FROM_DB=true (off by default → tests never touch the DB). */
+function macrosFromDbEnabled(): boolean {
+  return (process.env.MACROS_FROM_DB ?? "").toLowerCase() === "true";
 }
 
 function normalizeIngredients(
@@ -467,8 +480,14 @@ export async function analyzeImageWithFallback(
   if (process.env.GEMINI_API_KEY) {
     let geminiResult: Awaited<ReturnType<typeof analyzeDishWithGemini>> | null =
       null;
+    // Inject the nutritional catalog so Gemini maps each ingredient to a
+    // canonical entry (semantic matching for the hybrid DB-macros step).
+    let catalogNames: string[] = [];
     try {
-      geminiResult = await analyzeDishWithGemini(input);
+      catalogNames = macrosFromDbEnabled()
+        ? await getNutritionalCatalogNames()
+        : [];
+      geminiResult = await analyzeDishWithGemini(input, { catalogNames });
     } catch (geminiErr) {
       const isPermanent = geminiErr instanceof PermanentProviderError;
       structuredLog({
@@ -521,6 +540,7 @@ export async function analyzeImageWithFallback(
         usedFallback: false,
         inputHash,
         userId: input.userId,
+        catalogSize: catalogNames.length,
       });
     }
   }
@@ -612,9 +632,57 @@ export async function analyzeImageWithFallback(
   });
 }
 
+// ─── Hybrid macro reconciliation (feature: macros from DB) ──────────────────────
+
+export type MacroLookupFn = (name: string) => Promise<DetailedNutritionLookup>;
+
+/**
+ * Recalculate macros from the nutritional_reference DB for every ingredient
+ * with a REAL catalog match (exact/alias, including the LLM-chosen catalog_name);
+ * ingredients without a trustworthy match keep their AI-estimated macros.
+ * Pure orchestration — lookup is injectable for testing.
+ */
+export async function reconcileMacrosWithDb(
+  ingredients: IngredientResult[],
+  catalogNameFor: (ingredientName: string) => string | undefined,
+  lookup: MacroLookupFn = lookupNutritionalDataDetailed,
+): Promise<{
+  ingredients: IngredientResult[];
+  matches: number;
+  /** Canonical DB name per ingredient (aligned with `ingredients`), null = no match. */
+  matchedNames: (string | null)[];
+}> {
+  const results = await Promise.all(
+    ingredients.map(async (ing) => {
+      if (ing.quantity_g <= 0) return { ing, matchedName: null };
+
+      const candidates = [catalogNameFor(ing.name), ing.name].filter(
+        (c): c is string => Boolean(c && c.trim()),
+      );
+
+      for (const candidate of candidates) {
+        const result = await lookup(candidate);
+        if (result.matched) {
+          return {
+            ing: { ...ing, ...calculateMacros(ing.quantity_g, result.nutrition) },
+            matchedName: result.matchedName ?? candidate,
+          };
+        }
+      }
+      return { ing, matchedName: null }; // no trustworthy match — keep AI macros
+    }),
+  );
+
+  return {
+    ingredients: results.map((r) => r.ing),
+    matches: results.filter((r) => r.matchedName !== null).length,
+    matchedNames: results.map((r) => r.matchedName),
+  };
+}
+
 // ─── Output builder (shared by all providers) ───────────────────────────────────
 
-function buildAnalyzeOutput(params: {
+async function buildAnalyzeOutput(params: {
   raw: RawProviderResponse;
   providerName: VisionProvider;
   modelName: string;
@@ -622,7 +690,9 @@ function buildAnalyzeOutput(params: {
   usedFallback: boolean;
   inputHash: string;
   userId?: string;
-}): AnalyzeOutput {
+  /** Nº of catalog entries injected into the prompt (diagnostics only). */
+  catalogSize?: number;
+}): Promise<AnalyzeOutput> {
   const {
     raw,
     providerName,
@@ -644,7 +714,46 @@ function buildAnalyzeOutput(params: {
     deduped,
     raw.total_weight_g ?? 0,
   );
-  const ingredients = weightResult.ingredients;
+  let ingredients = weightResult.ingredients;
+
+  // Hybrid DB macros: after weights are final, override AI macros with per-100g
+  // DB values for real catalog matches only; unmatched keep AI estimates.
+  let dbMacroMatches = 0;
+  if (macrosFromDbEnabled()) {
+    const catalogByName = new Map<string, string>();
+    for (const item of raw.ingredients ?? []) {
+      if (item?.name && item.catalog_name) {
+        catalogByName.set(
+          String(item.name).trim().toLowerCase(),
+          String(item.catalog_name),
+        );
+      }
+    }
+    const reconciled = await reconcileMacrosWithDb(ingredients, (n) =>
+      catalogByName.get(n.trim().toLowerCase()),
+    );
+
+    // Dev-only matching detail (exception to the "no LLM content in logs"
+    // rule, never emitted in production): per-ingredient name, the catalog
+    // entry Gemini chose, and what actually matched in the DB — without this
+    // a db_macro_matches:0 is undiagnosable.
+    if (!isProductionEnvironment()) {
+      structuredLog({
+        level: "debug",
+        action: "db_macro_matching",
+        input_hash: inputHash,
+        detail: ingredients.map((ing, i) => ({
+          name: ing.name,
+          catalog_name: catalogByName.get(ing.name.trim().toLowerCase()) ?? null,
+          db_match: reconciled.matchedNames[i] ?? null,
+        })),
+      });
+    }
+
+    ingredients = reconciled.ingredients;
+    dbMacroMatches = reconciled.matches;
+  }
+
   const totals = computeTotals(ingredients);
   const confidenceScores = ingredients.map((i) => i.confidence);
 
@@ -705,6 +814,9 @@ function buildAnalyzeOutput(params: {
     confidence: dishConfidence,
     confidence_level: confidenceLevel,
     analysis_status: analysisStatus,
+    macros_from_db: macrosFromDbEnabled(),
+    db_macro_matches: dbMacroMatches,
+    catalog_size: params.catalogSize,
   });
 
   return {

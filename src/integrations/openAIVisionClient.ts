@@ -76,6 +76,10 @@ function buildPrompt(ingredients: IngredientInput[]): string {
     list,
     "",
     "Rules:",
+    "- Estimate weights from VISUAL evidence: use size references visible in the",
+    "  photo (a standard dinner plate is ~26 cm, a fork ~20 cm, an adult hand ~18 cm),",
+    "  apparent volume and each food's typical density; use typical serving sizes",
+    "  only as a sanity check.",
     "- quantity_g must be between 1 and 5000",
     "- confidence reflects your certainty (1.0 = certain, 0.0 = guessing)",
     '- If you cannot estimate an ingredient, set confidence to 0 and source to "missing"',
@@ -100,7 +104,9 @@ async function callOnce(
 
   const body = JSON.stringify({
     model,
-    max_tokens: 1024,
+    max_tokens: 2048,
+    // Disable Gemini 2.5 "thinking" — see geminiVisionClient for rationale.
+    extra_body: { google: { thinking_config: { thinking_budget: 0 } } },
     messages: [
       {
         role: "user",

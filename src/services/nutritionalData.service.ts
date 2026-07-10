@@ -6,16 +6,6 @@
 import { prisma } from "../lib/prisma";
 import type { NutritionPer100g } from "../types/estimateQuantities.types";
 
-type NutritionalRow = {
-  id: string;
-  name: string;
-  category: string;
-  calories_per_100g: number;
-  protein_per_100g: number;
-  carbs_per_100g: number;
-  fat_per_100g: number;
-};
-
 // Category average fallbacks (approximate values for Spanish Mediterranean diet)
 const CATEGORY_FALLBACKS: Record<string, NutritionPer100g> = {
   cereales: { calories: 350, protein: 9, carbs: 72, fat: 2 },
@@ -35,58 +25,114 @@ const DEFAULT_FALLBACK: NutritionPer100g = {
   fat: 5,
 };
 
-function rowToNutrition(row: NutritionalRow): NutritionPer100g {
-  return {
-    calories: row.calories_per_100g,
-    protein: row.protein_per_100g,
-    carbs: row.carbs_per_100g,
-    fat: row.fat_per_100g,
-  };
-}
+export type DetailedNutritionLookup = {
+  nutrition: NutritionPer100g;
+  /**
+   * true ONLY for a real catalog hit (exact name or alias). Category averages
+   * and the default fallback report false — callers use this to decide whether
+   * DB values are trustworthy enough to override AI-estimated macros.
+   */
+  matched: boolean;
+  /** Canonical catalog name when matched. */
+  matchedName?: string;
+};
 
-export async function lookupNutritionalData(
+export async function lookupNutritionalDataDetailed(
   name: string,
-): Promise<NutritionPer100g> {
+): Promise<DetailedNutritionLookup> {
   const normalized = name.trim().toLowerCase();
 
+  // Typed Prisma client, NOT raw SQL: the physical columns are camelCase
+  // ("caloriesPer100g" — the model has no @map on fields), so the original
+  // snake_case raw queries always errored and fell through to the fallback.
   try {
     // 1. Exact name match (case-insensitive)
-    const exactRows = await prisma.$queryRaw<NutritionalRow[]>`
-      SELECT id, name, category, calories_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g
-      FROM nutritional_reference
-      WHERE LOWER(name) = ${normalized}
-      LIMIT 1
-    `;
-    if (exactRows.length > 0) return rowToNutrition(exactRows[0]);
+    const exact = await prisma.nutritionalReference.findFirst({
+      where: { name: { equals: normalized, mode: "insensitive" } },
+    });
+    if (exact) {
+      return {
+        nutrition: {
+          calories: exact.caloriesPer100g,
+          protein: exact.proteinPer100g,
+          carbs: exact.carbsPer100g,
+          fat: exact.fatPer100g,
+        },
+        matched: true,
+        matchedName: exact.name,
+      };
+    }
 
-    // 2. Alias match — PostgreSQL array contains
-    const aliasRows = await prisma.$queryRaw<NutritionalRow[]>`
-      SELECT id, name, category, calories_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g
-      FROM nutritional_reference
-      WHERE ${normalized} = ANY(aliases)
-      LIMIT 1
-    `;
-    if (aliasRows.length > 0) return rowToNutrition(aliasRows[0]);
+    // 2. Alias match — aliases are stored lowercase
+    const aliased = await prisma.nutritionalReference.findFirst({
+      where: { aliases: { has: normalized } },
+    });
+    if (aliased) {
+      return {
+        nutrition: {
+          calories: aliased.caloriesPer100g,
+          protein: aliased.proteinPer100g,
+          carbs: aliased.carbsPer100g,
+          fat: aliased.fatPer100g,
+        },
+        matched: true,
+        matchedName: aliased.name,
+      };
+    }
 
     // 3. Category fallback — partial name match → return category average
-    const categoryRows = await prisma.$queryRaw<
-      Pick<NutritionalRow, "category">[]
-    >`
-      SELECT category
-      FROM nutritional_reference
-      WHERE LOWER(name) LIKE ${"%" + normalized.split(" ")[0] + "%"}
-      LIMIT 1
-    `;
-    if (categoryRows.length > 0) {
-      const fallback =
-        CATEGORY_FALLBACKS[categoryRows[0].category.toLowerCase()];
-      if (fallback) return fallback;
+    const firstWord = normalized.split(" ")[0] ?? "";
+    if (firstWord) {
+      const categoryRow = await prisma.nutritionalReference.findFirst({
+        where: { name: { contains: firstWord, mode: "insensitive" } },
+        select: { category: true },
+      });
+      if (categoryRow) {
+        const fallback = CATEGORY_FALLBACKS[categoryRow.category.toLowerCase()];
+        if (fallback) return { nutrition: fallback, matched: false };
+      }
     }
   } catch {
     // Table may not exist yet (pre-migration). Return default fallback.
   }
 
-  return DEFAULT_FALLBACK;
+  return { nutrition: DEFAULT_FALLBACK, matched: false };
+}
+
+export async function lookupNutritionalData(
+  name: string,
+): Promise<NutritionPer100g> {
+  return (await lookupNutritionalDataDetailed(name)).nutrition;
+}
+
+// ─── Catalog names (for LLM canonical mapping) ───────────────────────────────
+
+let catalogCache: { names: string[]; fetchedAt: number } | null = null;
+const CATALOG_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * All canonical names from nutritional_reference, cached in memory (10 min TTL).
+ * Injected into the vision prompt so the LLM can map each detected ingredient
+ * to a catalog entry (semantic matching: synonyms/translations). Returns [] if
+ * the table is missing or empty — callers then simply skip catalog mapping.
+ */
+export async function getNutritionalCatalogNames(): Promise<string[]> {
+  const now = Date.now();
+  if (catalogCache && now - catalogCache.fetchedAt < CATALOG_CACHE_TTL_MS) {
+    return catalogCache.names;
+  }
+
+  try {
+    const rows = await prisma.nutritionalReference.findMany({
+      select: { name: true },
+      orderBy: { name: "asc" },
+    });
+    catalogCache = { names: rows.map((r) => r.name), fetchedAt: now };
+    return catalogCache.names;
+  } catch {
+    // Table may not exist yet — serve stale cache if any, else empty.
+    return catalogCache?.names ?? [];
+  }
 }
 
 export function calculateMacros(
