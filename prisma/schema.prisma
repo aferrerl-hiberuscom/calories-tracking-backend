@@ -49,6 +49,8 @@ model User {
   meals         Meal[]
   refreshTokens RefreshToken[]
   nutritionGoal NutritionGoal?
+  // Feature 027 — reusable dishes are PER USER (D-MULTI-06), unlike Products.
+  dishes        Dish[]
   createdAt     DateTime       @default(now())
 }
 
@@ -177,6 +179,40 @@ model Product {
   updatedAt        DateTime      @updatedAt
 
   @@map("products")
+}
+
+// Feature 027 (evolution plato_multiescaneo) — reusable dish composed of
+// scanned products. Strictly per-user (D-MULTI-06): every query MUST filter
+// by userId; there is no global read surface in v1 (D-MULTI-08).
+model Dish {
+  id          String           @id @default(uuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String           @db.VarChar(120)
+  ingredients DishIngredient[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([userId])
+  @@map("dishes")
+}
+
+// Snapshot of the composition as confirmed in A6 (macros frozen at save time);
+// productBarcode is an informative reference to the global Product.
+model DishIngredient {
+  id             String  @id @default(uuid())
+  dishId         String
+  dish           Dish    @relation(fields: [dishId], references: [id], onDelete: Cascade)
+  name           String  @db.VarChar(120)
+  productBarcode String?
+  quantityG      Float
+  caloriesKcal   Float
+  proteinG       Float
+  carbsG         Float
+  fatG           Float
+
+  @@index([dishId])
+  @@map("dish_ingredients")
 }
 
 model NutritionalReference {

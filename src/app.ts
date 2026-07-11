@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { analyzeImageRouter } from "./routes/analyze-image";
 import { authRouter } from "./routes/auth";
 import { dashboardRouter } from "./routes/dashboard";
+import { dishesRouter } from "./routes/dishes";
 import { healthRouter } from "./routes/health";
 import { imagesRouter } from "./routes/images";
 import { mealsRouter } from "./routes/meals";
@@ -83,6 +84,13 @@ export function createApp() {
     "/api/v1/products",
     rateLimit({ max: 60, windowMs: 60_000 }),
     productsRouter,
+  );
+  // Feature 027: per-user reusable dishes (suggest-name has its own AI bucket
+  // inside the router).
+  app.use(
+    "/api/v1/dishes",
+    rateLimit({ max: 60, windowMs: 60_000 }),
+    dishesRouter,
   );
 
   app.use(errorHandler);
