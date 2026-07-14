@@ -1,4 +1,5 @@
 // Feature 027 — dishes routes integration tests (contract §3).
+// Feature 028 — personal catalog: GET / and DELETE /:id (contract 028 §3).
 // Patterns mirror products.routes.test.ts: supertest, prisma spies, and the
 // Gemini dish-name client mocked at module level.
 
@@ -40,6 +41,7 @@ const DB_DISH = {
   id: "dish-1",
   userId: TEST_USER_ID,
   name: "Ensalada césar",
+  sourceMealId: null as string | null,
   createdAt: new Date(),
   updatedAt: new Date(),
   ingredients: [
@@ -53,6 +55,31 @@ const DB_DISH = {
       proteinG: 1.1,
       carbsG: 1.8,
       fatG: 0.2,
+    },
+  ],
+};
+
+// Feature favoritos_mis_platos: a meal to favorite (with ingredients to snapshot).
+const DB_MEAL = {
+  id: "meal-1",
+  userId: TEST_USER_ID,
+  name: "Albóndigas con salsa",
+  mealType: "DINNER",
+  mealDate: new Date(),
+  status: "confirmed",
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  ingredients: [
+    {
+      id: "mi-1",
+      mealId: "meal-1",
+      name: "Albóndigas",
+      quantityG: 150,
+      source: "INFERRED",
+      caloriesKcal: 300,
+      proteinG: 20,
+      carbsG: 10,
+      fatG: 18,
     },
   ],
 };
@@ -170,6 +197,270 @@ describe("POST /api/v1/dishes", () => {
       .post("/api/v1/dishes")
       .send(DISH_PAYLOAD);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /api/v1/dishes", () => {
+  it("lists only the authenticated user's dishes, newest first (BR-028-01)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    const findSpy = vi
+      .spyOn(p.dish, "findMany")
+      .mockResolvedValue([DB_DISH] as never);
+
+    const res = await request(createApp())
+      .get("/api/v1/dishes")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.dishes).toHaveLength(1);
+    expect(res.body.dishes[0].dish_id).toBe("dish-1");
+    expect(res.body.dishes[0].ingredients[0]).toEqual({
+      name: "Lechuga",
+      product_barcode: "8410100012345",
+      quantity_g: 80,
+      calories_kcal: 12,
+      protein_g: 1.1,
+      carbs_g: 1.8,
+      fat_g: 0.2,
+    });
+    // Ownership + ordering enforced in the query itself
+    expect(findSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: TEST_USER_ID },
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+  });
+
+  it("returns 200 with an empty list when the catalog is empty (AC-028-02)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.dish, "findMany").mockResolvedValue([] as never);
+
+    const res = await request(createApp())
+      .get("/api/v1/dishes")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.dishes).toEqual([]);
+  });
+
+  it("requires authentication (401)", async () => {
+    const { createApp } = await import("../../src/app");
+    const res = await request(createApp()).get("/api/v1/dishes");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("DELETE /api/v1/dishes/:id", () => {
+  it("deletes an owned dish (204) using the compound filter (BR-028-02)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    const deleteSpy = vi
+      .spyOn(p.dish, "deleteMany")
+      .mockResolvedValue({ count: 1 } as never);
+
+    const res = await request(createApp())
+      .delete("/api/v1/dishes/dish-1")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(204);
+    expect(deleteSpy).toHaveBeenCalledWith({
+      where: { id: "dish-1", userId: TEST_USER_ID },
+    });
+  });
+
+  it("answers 404 DISH_NOT_FOUND for a foreign or missing dish (AC-028-04)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.dish, "deleteMany").mockResolvedValue({ count: 0 } as never);
+
+    const res = await request(createApp())
+      .delete("/api/v1/dishes/dish-of-another-user")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("DISH_NOT_FOUND");
+  });
+
+  it("requires authentication (401)", async () => {
+    const { createApp } = await import("../../src/app");
+    const res = await request(createApp()).delete("/api/v1/dishes/dish-1");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("POST /api/v1/meals/:id/favorite (028 v2.0.0)", () => {
+  it("creates a favorite Dish snapshot linked to the meal (201, BR-028-10)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findFirst").mockResolvedValue(DB_MEAL as never);
+    vi.spyOn(p.dish, "findUnique").mockResolvedValue(null as never);
+    const createSpy = vi
+      .spyOn(p.dish, "create")
+      .mockResolvedValue({ ...DB_DISH, sourceMealId: "meal-1" } as never);
+
+    const res = await request(createApp())
+      .post("/api/v1/meals/meal-1/favorite")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(201);
+    expect(res.body.dish_id).toBe("dish-1");
+    // Snapshot links to the meal and carries the meal name.
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: TEST_USER_ID,
+          sourceMealId: "meal-1",
+          name: "Albóndigas con salsa",
+        }),
+      }),
+    );
+  });
+
+  it("is idempotent: returns 200 with the existing favorite, no duplicate (BR-028-11)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findFirst").mockResolvedValue(DB_MEAL as never);
+    vi.spyOn(p.dish, "findUnique").mockResolvedValue({
+      ...DB_DISH,
+      sourceMealId: "meal-1",
+    } as never);
+    const createSpy = vi.spyOn(p.dish, "create");
+
+    const res = await request(createApp())
+      .post("/api/v1/meals/meal-1/favorite")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.dish_id).toBe("dish-1");
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 MEAL_NOT_FOUND for a foreign or missing meal (AC-028-21)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findFirst").mockResolvedValue(null as never);
+
+    const res = await request(createApp())
+      .post("/api/v1/meals/meal-of-another-user/favorite")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("MEAL_NOT_FOUND");
+  });
+
+  it("requires authentication (401)", async () => {
+    const { createApp } = await import("../../src/app");
+    const res = await request(createApp()).post("/api/v1/meals/meal-1/favorite");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("DELETE /api/v1/meals/:id/favorite (028 v2.0.0)", () => {
+  it("deletes the linked Dish and answers 204 (AC-028-20)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findFirst").mockResolvedValue(DB_MEAL as never);
+    const deleteSpy = vi
+      .spyOn(p.dish, "deleteMany")
+      .mockResolvedValue({ count: 1 } as never);
+
+    const res = await request(createApp())
+      .delete("/api/v1/meals/meal-1/favorite")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(204);
+    expect(deleteSpy).toHaveBeenCalledWith({
+      where: { sourceMealId: "meal-1", userId: TEST_USER_ID },
+    });
+  });
+
+  it("is idempotent: 204 even when there was no favorite (AC-028-20)", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findFirst").mockResolvedValue(DB_MEAL as never);
+    vi.spyOn(p.dish, "deleteMany").mockResolvedValue({ count: 0 } as never);
+
+    const res = await request(createApp())
+      .delete("/api/v1/meals/meal-1/favorite")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(204);
+  });
+
+  it("answers 404 MEAL_NOT_FOUND for a foreign or missing meal", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findFirst").mockResolvedValue(null as never);
+
+    const res = await request(createApp())
+      .delete("/api/v1/meals/gone/favorite")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("MEAL_NOT_FOUND");
+  });
+});
+
+describe("GET /api/v1/meals — is_favorite in DTOs (AC-028-22)", () => {
+  it("marks is_favorite true when a favorite Dish is linked", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findMany").mockResolvedValue([
+      {
+        id: "meal-1",
+        name: "Albóndigas con salsa",
+        mealType: "DINNER",
+        mealDate: new Date(),
+        status: "confirmed",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        nutrition: {
+          caloriesKcal: 300,
+          proteinG: 20,
+          carbsG: 10,
+          fatG: 18,
+          totalWeightG: 150,
+        },
+        image: null,
+        favoriteDish: { id: "dish-1" },
+      },
+    ] as never);
+
+    const res = await request(createApp())
+      .get("/api/v1/meals")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.meals[0].is_favorite).toBe(true);
+  });
+
+  it("marks is_favorite false when no favorite Dish is linked", async () => {
+    const { createApp } = await import("../../src/app");
+    const { prisma: p } = await import("../../src/lib/prisma.js");
+    vi.spyOn(p.meal, "findMany").mockResolvedValue([
+      {
+        id: "meal-2",
+        name: "Bebida de avena",
+        mealType: "SNACK",
+        mealDate: new Date(),
+        status: "confirmed",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        nutrition: null,
+        image: null,
+        favoriteDish: null,
+      },
+    ] as never);
+
+    const res = await request(createApp())
+      .get("/api/v1/meals")
+      .set("Authorization", `Bearer ${buildToken(TEST_USER_ID)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.meals[0].is_favorite).toBe(false);
   });
 });
 

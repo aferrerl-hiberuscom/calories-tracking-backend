@@ -12,6 +12,8 @@ import {
 import { calculateCalories } from "../services/calculateCalories.service";
 // Feature 013: confirm and save meal
 import { createMeal } from "../controllers/meals.controller";
+// Feature favoritos_mis_platos: mark/unmark a meal as favorite (contract 028 §3.3/3.4)
+import { favoriteMeal, unfavoriteMeal } from "../services/dishes.service";
 
 export const mealsRouter = Router();
 
@@ -42,6 +44,8 @@ function mapMealListItem(meal: {
     totalWeightG: number;
   } | null;
   image?: { storageKey: string } | null;
+  // Feature favoritos_mis_platos: present (non-null) when the meal is favorited.
+  favoriteDish?: { id: string } | null;
 }) {
   return {
     meal_id: meal.id,
@@ -55,6 +59,8 @@ function mapMealListItem(meal: {
     fat_g: meal.nutrition?.fatG ?? 0,
     total_weight_g: meal.nutrition?.totalWeightG ?? 0,
     image: meal.image ? { storage_key: meal.image.storageKey } : null,
+    // is_favorite = a Dish with sourceMealId = this meal exists (D-FAV-06).
+    is_favorite: meal.favoriteDish != null,
     created_at: meal.createdAt.toISOString(),
     updated_at: meal.updatedAt.toISOString(),
   };
@@ -123,7 +129,11 @@ mealsRouter.get("/", requireAuth, async (req, res, next) => {
       const [meals, total] = await Promise.all([
         prisma.meal.findMany({
           where,
-          include: { nutrition: true, image: true },
+          include: {
+            nutrition: true,
+            image: true,
+            favoriteDish: { select: { id: true } },
+          },
           orderBy: { mealDate: "desc" },
           take: limit,
           skip,
@@ -142,7 +152,11 @@ mealsRouter.get("/", requireAuth, async (req, res, next) => {
 
     const meals = await prisma.meal.findMany({
       where,
-      include: { nutrition: true, image: true },
+      include: {
+        nutrition: true,
+        image: true,
+        favoriteDish: { select: { id: true } },
+      },
       orderBy: { mealDate: "desc" },
     });
 
@@ -162,7 +176,12 @@ mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
   try {
     const meal = await prisma.meal.findUnique({
       where: { id: mealId },
-      include: { ingredients: true, nutrition: true, image: true },
+      include: {
+        ingredients: true,
+        nutrition: true,
+        image: true,
+        favoriteDish: { select: { id: true } },
+      },
     });
 
     if (!meal) {
@@ -209,9 +228,43 @@ mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
             size_bytes: meal.image.sizeBytes,
           }
         : null,
+      // Feature favoritos_mis_platos (D-FAV-06): is_favorite in the detail DTO.
+      is_favorite: meal.favoriteDish != null,
       created_at: meal.createdAt.toISOString(),
       updated_at: meal.updatedAt.toISOString(),
     });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// ─── Feature favoritos_mis_platos: mark/unmark favorite (contract 028 §3.3/3.4) ─
+// Ergonomic per-meal toggle; the Dish lifecycle lives in dishes.service.
+
+mealsRouter.post("/:id/favorite", requireAuth, async (req, res, next) => {
+  const userId = getRequiredUserId(req);
+  const mealId = resolveParamId(req.params.id);
+  try {
+    const result = await favoriteMeal(userId, mealId);
+    if (!result) {
+      return next(new ApiError(404, "MEAL_NOT_FOUND", "Meal not found"));
+    }
+    // 201 when a favorite was created, 200 when it already existed (idempotent).
+    return res.status(result.created ? 201 : 200).json(result.dish);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+mealsRouter.delete("/:id/favorite", requireAuth, async (req, res, next) => {
+  const userId = getRequiredUserId(req);
+  const mealId = resolveParamId(req.params.id);
+  try {
+    const ok = await unfavoriteMeal(userId, mealId);
+    if (ok === null) {
+      return next(new ApiError(404, "MEAL_NOT_FOUND", "Meal not found"));
+    }
+    return res.status(204).send();
   } catch (error) {
     return next(error);
   }

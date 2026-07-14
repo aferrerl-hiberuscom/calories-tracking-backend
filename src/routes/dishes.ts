@@ -2,6 +2,9 @@
 // POST /              → create per-user reusable dish (201)
 // POST /suggest-name  → best-effort AI name inference (always 200 for valid
 //                       payloads; dish_name null when the provider is down)
+// Feature 028 — personal catalog (contract 028 §3).
+// GET /               → list own dishes, newest first (200, empty list ok)
+// DELETE /:id         → delete own dish (204; 404 DISH_NOT_FOUND otherwise)
 
 import { Router } from "express";
 import { z } from "zod";
@@ -9,7 +12,12 @@ import { requireAuth, getRequiredUserId } from "../middleware/auth";
 import { ApiError } from "../middleware/api-error";
 import { rateLimit } from "../middleware/rate-limit";
 import { normalizeBarcode } from "../lib/barcode";
-import { createDish, suggestName } from "../services/dishes.service";
+import {
+  createDish,
+  deleteDish,
+  listDishes,
+  suggestName,
+} from "../services/dishes.service";
 
 export const dishesRouter = Router();
 dishesRouter.use(requireAuth);
@@ -52,6 +60,29 @@ dishesRouter.post("/suggest-name", suggestNameRateLimit, async (req, res, next) 
   // inside the service — this endpoint never 5xxes because of the AI.
   const suggestion = await suggestName(parsed.data.ingredient_names);
   return res.json(suggestion);
+});
+
+dishesRouter.get("/", async (req, res, next) => {
+  try {
+    const dishes = await listDishes(getRequiredUserId(req));
+    return res.json({ dishes });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// A non-uuid :id simply matches nothing in the compound delete and falls
+// through to the same 404 — no separate validation needed (contract §3.2).
+dishesRouter.delete("/:id", async (req, res, next) => {
+  try {
+    const deleted = await deleteDish(getRequiredUserId(req), req.params.id);
+    if (!deleted) {
+      return next(new ApiError(404, "DISH_NOT_FOUND", "Dish not found"));
+    }
+    return res.status(204).send();
+  } catch (err) {
+    return next(err);
+  }
 });
 
 dishesRouter.post("/", async (req, res, next) => {

@@ -99,6 +99,9 @@ model Meal {
   ingredients    Ingredient[]
   nutrition      NutritionalData?
   image          Image?
+  // Evolution favoritos_mis_platos — back-relation to the favorite Dish (if the
+  // meal has been added to «Mis platos»). is_favorite = favoriteDish != null.
+  favoriteDish   Dish?
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
@@ -190,6 +193,11 @@ model Dish {
   user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   name        String           @db.VarChar(120)
   ingredients DishIngredient[]
+  // Evolution favoritos_mis_platos — links a favorite dish to its source meal.
+  // Nullable + unique (at most one favorite Dish per meal, BR-028-11); SetNull
+  // so deleting the meal keeps the favorite in «Mis platos» (BR-028-12).
+  sourceMealId String?         @unique
+  sourceMeal   Meal?           @relation(fields: [sourceMealId], references: [id], onDelete: SetNull)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
