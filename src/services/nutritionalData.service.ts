@@ -105,6 +105,53 @@ export async function lookupNutritionalData(
   return (await lookupNutritionalDataDetailed(name)).nutrition;
 }
 
+// ─── Catalog search (feature ingredientes_frescos) ───────────────────────────
+
+export type NutritionalReferenceResult = {
+  name: string;
+  calories_per_100g: number;
+  protein_per_100g: number;
+  carbs_per_100g: number;
+  fat_per_100g: number;
+};
+
+/**
+ * Search the nutritional_reference catalog by name (substring, case-insensitive)
+ * or exact alias, returning per-100g macros. Read-only; feeds the fresh (no
+ * barcode) ingredient picker of the dish basket (D-FRESH-02/03). Empty query or
+ * a missing table returns []. Results are capped.
+ */
+export async function searchNutritionalReference(
+  query: string,
+  limit = 20,
+): Promise<NutritionalReferenceResult[]> {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return [];
+
+  try {
+    const rows = await prisma.nutritionalReference.findMany({
+      where: {
+        OR: [
+          { name: { contains: normalized, mode: "insensitive" } },
+          { aliases: { has: normalized } },
+        ],
+      },
+      orderBy: { name: "asc" },
+      take: limit,
+    });
+    return rows.map((r) => ({
+      name: r.name,
+      calories_per_100g: r.caloriesPer100g,
+      protein_per_100g: r.proteinPer100g,
+      carbs_per_100g: r.carbsPer100g,
+      fat_per_100g: r.fatPer100g,
+    }));
+  } catch {
+    // Table may not exist yet (pre-migration) — no results.
+    return [];
+  }
+}
+
 // ─── Catalog names (for LLM canonical mapping) ───────────────────────────────
 
 let catalogCache: { names: string[]; fetchedAt: number } | null = null;

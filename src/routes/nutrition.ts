@@ -6,6 +6,8 @@ import {
   FOOD_TYPES,
   lookupFoodType,
 } from "../services/nutritionLookup.service";
+// Feature ingredientes_frescos: search the nutritional_reference catalog.
+import { searchNutritionalReference } from "../services/nutritionalData.service";
 
 export const nutritionRouter = Router();
 
@@ -53,6 +55,24 @@ nutritionRouter.get("/lookup", requireAuth, (req, res, next) => {
 // Returns the list of valid food type categories for the dropdown.
 nutritionRouter.get("/categories", requireAuth, (_req, res) => {
   return res.json({ categories: FOOD_TYPES });
+});
+
+// Feature ingredientes_frescos (AC-027-17):
+// GET /api/v1/nutrition/reference?q={text}
+// Search the nutritional_reference catalog by name/alias; per-100g macros.
+nutritionRouter.get("/reference", requireAuth, async (req, res, next) => {
+  try {
+    const q = req.query.q;
+    if (typeof q !== "string" || q.trim().length === 0) {
+      return next(
+        new ApiError(400, "MISSING_QUERY", "Query parameter q is required"),
+      );
+    }
+    const results = await searchNutritionalReference(q);
+    return res.json({ results });
+  } catch (err) {
+    return next(err);
+  }
 });
 
 // ─── Confirm endpoint ─────────────────────────────────────────────────────────
