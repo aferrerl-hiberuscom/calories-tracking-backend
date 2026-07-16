@@ -211,6 +211,13 @@ mealsRouter.get("/:id", requireAuth, async (req, res, next) => {
         source: ing.source,
         cooking_method: ing.cookingMethod ?? null,
         confidence: ing.confidence ?? null,
+        // Contract 014 v2.4.0 (additive): per-ingredient macros so the client
+        // can rescale by density when a quantity is edited in B3 and echo
+        // them back on PUT (they were being wiped to 0 on every edit).
+        calories_kcal: ing.caloriesKcal ?? 0,
+        protein_g: ing.proteinG ?? 0,
+        carbs_g: ing.carbsG ?? 0,
+        fat_g: ing.fatG ?? 0,
       })),
       nutrition: meal.nutrition
         ? {

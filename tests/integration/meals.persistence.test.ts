@@ -365,6 +365,11 @@ describe("Persistence: GET /api/v1/meals/:id (detail)", () => {
           cookingMethod: "asado",
           confidence: 0.95,
           mealId: "meal-full-001",
+          // Contract 014 v2.4.0: per-ingredient macros exposed in the DTO.
+          caloriesKcal: 330,
+          proteinG: 62,
+          carbsG: 0,
+          fatG: 7,
         },
       ],
       nutrition: {
@@ -397,6 +402,13 @@ describe("Persistence: GET /api/v1/meals/:id (detail)", () => {
     expect(response.body.meal_id).toBe("meal-full-001");
     expect(response.body.ingredients).toHaveLength(1);
     expect(response.body.ingredients[0].cooking_method).toBe("asado");
+    // Contract 014 v2.4.0: per-ingredient macros in the detail DTO.
+    expect(response.body.ingredients[0]).toMatchObject({
+      calories_kcal: 330,
+      protein_g: 62,
+      carbs_g: 0,
+      fat_g: 7,
+    });
     expect(response.body.nutrition.calories_kcal).toBe(330);
     expect(response.body.image.storage_key).toBe("uploads/meal-full-001.jpg");
   });
